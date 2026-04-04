@@ -1,6 +1,12 @@
 package lite
 
-import "github.com/sethdeckard/atria/internal/model"
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+
+	"github.com/sethdeckard/atria/internal/model"
+)
 
 type SlotID string
 
@@ -39,4 +45,25 @@ type MonitorContext struct {
 	TabID            int
 	SlotBindings     []SlotBinding
 	WorkspacePaneIDs []int
+}
+
+func EncodeMonitorContext(ctx MonitorContext) (string, error) {
+	raw, err := json.Marshal(ctx)
+	if err != nil {
+		return "", fmt.Errorf("marshal monitor context: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func DecodeMonitorContext(s string) (MonitorContext, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return MonitorContext{}, fmt.Errorf("decode monitor context: %w", err)
+	}
+
+	var ctx MonitorContext
+	if err := json.Unmarshal(raw, &ctx); err != nil {
+		return MonitorContext{}, fmt.Errorf("unmarshal monitor context: %w", err)
+	}
+	return ctx, nil
 }
