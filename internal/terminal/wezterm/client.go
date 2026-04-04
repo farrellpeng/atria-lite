@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -15,6 +16,28 @@ import (
 // Communication uses WezTerm's Unix socket (auto-discovered via WEZTERM_UNIX_SOCKET).
 type Client struct {
 	weztermPath string
+}
+
+// PaneInfo is a structured snapshot of a WezTerm pane.
+type PaneInfo struct {
+	WindowID  int
+	TabID     int
+	PaneID    int
+	Workspace string
+	Title     string
+	CWD       string
+	TTYName   string
+	IsActive  bool
+}
+
+// SplitPaneOptions controls how SplitPane arranges a new pane.
+type SplitPaneOptions struct {
+	PaneID    int
+	Direction string // "top", "right", "bottom", "left"
+	TopLevel  bool
+	Percent   int
+	CWD       string
+	Command   []string
 }
 
 // NewClient creates a new WezTerm Client. Empty weztermPath defaults to "wezterm".
@@ -50,6 +73,19 @@ type listEntry struct {
 	TTYName   string `json:"tty_name"`
 }
 
+func (e listEntry) toPaneInfo(activePaneID int) PaneInfo {
+	return PaneInfo{
+		WindowID:  e.WindowID,
+		TabID:     e.TabID,
+		PaneID:    e.PaneID,
+		Workspace: e.Workspace,
+		Title:     e.Title,
+		CWD:       normalizeCWD(e.CWD),
+		TTYName:   e.TTYName,
+		IsActive:  activePaneID != 0 && e.PaneID == activePaneID,
+	}
+}
+
 // parseListOutput parses the flat JSON array from wezterm cli list.
 func parseListOutput(data []byte) ([]listEntry, error) {
 	var entries []listEntry
@@ -70,6 +106,19 @@ func normalizeCWD(raw string) string {
 		return strings.TrimPrefix(raw, "file://")
 	}
 	return u.Path
+}
+
+// CurrentPaneIDFromEnv returns the pane id from WEZTERM_PANE.
+func CurrentPaneIDFromEnv() (int, error) {
+	raw := strings.TrimSpace(os.Getenv("WEZTERM_PANE"))
+	if raw == "" {
+		return 0, fmt.Errorf("WEZTERM_PANE is not set")
+	}
+	id, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse WEZTERM_PANE %q: %w", raw, err)
+	}
+	return id, nil
 }
 
 // Available checks if wezterm is installed and its CLI can reach a running
@@ -94,6 +143,23 @@ func (c *Client) Available() error {
 
 // ListSessions returns all WezTerm panes as terminal sessions.
 func (c *Client) ListSessions() ([]terminal.Session, error) {
+	panes, err := c.ListPanes()
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]terminal.Session, 0, len(panes))
+	for _, e := range panes {
+		sessions = append(sessions, terminal.Session{
+			ID:   strconv.Itoa(e.PaneID),
+			Name: e.Title,
+			TTY:  e.TTYName,
+		})
+	}
+	return sessions, nil
+}
+
+// ListPanes returns structured information about all WezTerm panes.
+func (c *Client) ListPanes() ([]PaneInfo, error) {
 	out, err := c.run("list", "--format", "json")
 	if err != nil {
 		return nil, err
@@ -102,15 +168,30 @@ func (c *Client) ListSessions() ([]terminal.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	sessions := make([]terminal.Session, 0, len(entries))
-	for _, e := range entries {
-		sessions = append(sessions, terminal.Session{
-			ID:   strconv.Itoa(e.PaneID),
-			Name: e.Title,
-			TTY:  e.TTYName,
-		})
+	activePaneID, err := CurrentPaneIDFromEnv()
+	if err != nil {
+		activePaneID = 0
 	}
-	return sessions, nil
+	panes := make([]PaneInfo, 0, len(entries))
+	for _, entry := range entries {
+		panes = append(panes, entry.toPaneInfo(activePaneID))
+	}
+	return panes, nil
+}
+
+// ListWindowPanes returns structured pane info for a single window.
+func (c *Client) ListWindowPanes(windowID int) ([]PaneInfo, error) {
+	panes, err := c.ListPanes()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PaneInfo, 0, len(panes))
+	for _, pane := range panes {
+		if pane.WindowID == windowID {
+			out = append(out, pane)
+		}
+	}
+	return out, nil
 }
 
 // NewSession launches a new window in WezTerm and returns its pane ID.
@@ -148,6 +229,55 @@ func (c *Client) FocusSession(sessionID string) error {
 	return err
 }
 
+// SplitPane creates a new pane with the requested layout.
+func (c *Client) SplitPane(opts SplitPaneOptions) (int, error) {
+	args := []string{"split-pane"}
+	if opts.PaneID != 0 {
+		args = append(args, "--pane-id", strconv.Itoa(opts.PaneID))
+	}
+	switch opts.Direction {
+	case "":
+	case "top":
+		args = append(args, "--top")
+	case "right":
+		args = append(args, "--right")
+	case "bottom":
+		args = append(args, "--bottom")
+	case "left":
+		args = append(args, "--left")
+	default:
+		return 0, fmt.Errorf("unsupported split direction: %s", opts.Direction)
+	}
+	if opts.TopLevel {
+		args = append(args, "--top-level")
+	}
+	if opts.Percent > 0 {
+		args = append(args, "--percent", strconv.Itoa(opts.Percent))
+	}
+	if opts.CWD != "" {
+		args = append(args, "--cwd", opts.CWD)
+	}
+	if len(opts.Command) > 0 {
+		args = append(args, "--")
+		args = append(args, opts.Command...)
+	}
+	out, err := c.run(args...)
+	if err != nil {
+		return 0, err
+	}
+	paneID, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("parse split-pane pane id: %w", err)
+	}
+	return paneID, nil
+}
+
+// MovePaneToNewTab moves a pane to a new tab in the specified window.
+func (c *Client) MovePaneToNewTab(paneID, windowID int) error {
+	_, err := c.run("move-pane-to-new-tab", "--pane-id", strconv.Itoa(paneID), "--window-id", strconv.Itoa(windowID))
+	return err
+}
+
 // ReadScreen captures the visible screen text from a WezTerm pane.
 func (c *Client) ReadScreen(sessionID string, lines int) (string, error) {
 	out, err := c.run("get-text", "--pane-id", sessionID)
@@ -166,17 +296,13 @@ func (c *Client) GetVar(sessionID, varName string) (string, error) {
 	if varName != "path" {
 		return "", fmt.Errorf("unsupported variable: %s", varName)
 	}
-	out, err := c.run("list", "--format", "json")
+	panes, err := c.ListPanes()
 	if err != nil {
 		return "", err
 	}
-	entries, err := parseListOutput(out)
-	if err != nil {
-		return "", err
-	}
-	for _, e := range entries {
-		if strconv.Itoa(e.PaneID) == sessionID {
-			return normalizeCWD(e.CWD), nil
+	for _, pane := range panes {
+		if strconv.Itoa(pane.PaneID) == sessionID {
+			return pane.CWD, nil
 		}
 	}
 	return "", fmt.Errorf("pane %s not found", sessionID)

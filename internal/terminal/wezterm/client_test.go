@@ -1,8 +1,42 @@
 package wezterm
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
+
+func writeWeztermStub(t *testing.T, stdout string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args.log")
+	scriptPath := filepath.Join(dir, "wezterm")
+	script := "#!/bin/sh\n" +
+		"printf '%s\n' \"$@\" > \"" + argsPath + "\"\n" +
+		"cat <<'EOF'\n" + stdout + "\nEOF\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	return scriptPath, argsPath
+}
+
+func readArgsLog(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
+}
 
 func TestNewClientDefaults(t *testing.T) {
 	c := NewClient("")
@@ -58,8 +92,8 @@ func TestParseListOutput(t *testing.T) {
 			wantLen: 0,
 		},
 		{
-			name: "missing optional fields",
-			input: `[{"pane_id": 5, "title": "shell", "cwd": "", "tty_name": ""}]`,
+			name:      "missing optional fields",
+			input:     `[{"pane_id": 5, "title": "shell", "cwd": "", "tty_name": ""}]`,
 			wantLen:   1,
 			wantID:    5,
 			wantTitle: "shell",
@@ -106,6 +140,112 @@ func TestParseListOutputInvalidJSON(t *testing.T) {
 	_, err := parseListOutput([]byte("not json"))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestCurrentPaneIDFromEnv(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "42")
+	got, err := CurrentPaneIDFromEnv()
+	if err != nil {
+		t.Fatalf("CurrentPaneIDFromEnv() error: %v", err)
+	}
+	if got != 42 {
+		t.Fatalf("CurrentPaneIDFromEnv() = %d, want 42", got)
+	}
+}
+
+func TestCurrentPaneIDFromEnvInvalid(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "not-an-int")
+	_, err := CurrentPaneIDFromEnv()
+	if err == nil {
+		t.Fatal("expected error for invalid WEZTERM_PANE")
+	}
+}
+
+func TestListWindowPanesFiltersByWindow(t *testing.T) {
+	scriptPath, _ := writeWeztermStub(t, `[
+		{"window_id": 7, "tab_id": 1, "pane_id": 11, "workspace": "default", "title": "claude", "cwd": "file:///tmp/a", "tty_name": "/dev/pts/1"},
+		{"window_id": 8, "tab_id": 2, "pane_id": 22, "workspace": "default", "title": "codex", "cwd": "/tmp/b", "tty_name": "/dev/pts/2"},
+		{"window_id": 7, "tab_id": 3, "pane_id": 33, "workspace": "default", "title": "shell", "cwd": "/tmp/c", "tty_name": "/dev/pts/3"}
+	]`)
+	t.Setenv("WEZTERM_PANE", "33")
+
+	c := NewClient(scriptPath)
+	panes, err := c.ListWindowPanes(7)
+	if err != nil {
+		t.Fatalf("ListWindowPanes() error: %v", err)
+	}
+	if len(panes) != 2 {
+		t.Fatalf("ListWindowPanes() len = %d, want 2", len(panes))
+	}
+
+	gotIDs := []int{panes[0].PaneID, panes[1].PaneID}
+	wantIDs := []int{11, 33}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("pane ids = %v, want %v", gotIDs, wantIDs)
+	}
+	if panes[0].CWD != "/tmp/a" {
+		t.Fatalf("pane 11 cwd = %q, want %q", panes[0].CWD, "/tmp/a")
+	}
+	if !panes[1].IsActive {
+		t.Fatal("expected pane 33 to be marked active")
+	}
+}
+
+func TestSplitPaneUsesTopLevelAndPercent(t *testing.T) {
+	scriptPath, argsPath := writeWeztermStub(t, "123\n")
+	c := NewClient(scriptPath)
+
+	got, err := c.SplitPane(SplitPaneOptions{
+		PaneID:    9,
+		Direction: "top",
+		TopLevel:  true,
+		Percent:   35,
+		CWD:       "/tmp/project",
+		Command:   []string{"bash", "-l"},
+	})
+	if err != nil {
+		t.Fatalf("SplitPane() error: %v", err)
+	}
+	if got != 123 {
+		t.Fatalf("SplitPane() = %d, want 123", got)
+	}
+
+	gotArgs := readArgsLog(t, argsPath)
+	wantArgs := []string{
+		"cli",
+		"split-pane",
+		"--pane-id", "9",
+		"--top",
+		"--top-level",
+		"--percent", "35",
+		"--cwd", "/tmp/project",
+		"--",
+		"bash",
+		"-l",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("SplitPane args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestMovePaneToNewTabUsesWindowID(t *testing.T) {
+	scriptPath, argsPath := writeWeztermStub(t, "")
+	c := NewClient(scriptPath)
+
+	if err := c.MovePaneToNewTab(55, 77); err != nil {
+		t.Fatalf("MovePaneToNewTab() error: %v", err)
+	}
+
+	gotArgs := readArgsLog(t, argsPath)
+	wantArgs := []string{
+		"cli",
+		"move-pane-to-new-tab",
+		"--pane-id", "55",
+		"--window-id", "77",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("MovePaneToNewTab args = %v, want %v", gotArgs, wantArgs)
 	}
 }
 
