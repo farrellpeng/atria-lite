@@ -22,7 +22,7 @@
 - 不跨 WezTerm window 或 workspace 管理 pane
 - 不支持 tmux、Kitty、iTerm2 作为 lite 工作台的底部承载环境
 - 不在上方 monitor 中保留聊天页、设置页、嵌入终端页
-- 不做普通 pane 的全局统一管理，普通 pane 仅作为 `Slot 3` 的可选内容
+- 不做普通 pane 的全局统一管理，普通 pane 仅作为底部工作区最右侧活跃槽位的可选内容
 
 ## 已确认的产品边界
 
@@ -31,18 +31,19 @@
 - 上方 pane：精简监控版 atria，仅负责列表、状态、选中、槽位装载、替换提示
 - 下方 pane：与 WezTerm 中完全一致的原生 pane
 - 下方最多 3 个槽位，且 `Slot 1`、`Slot 2`、`Slot 3` **同排**
-- `Slot 1`、`Slot 2`：只能装载 agent pane
-- `Slot 3`：既可装载 agent pane，也可装载普通 pane
+- 当 3 个槽位都活跃时：`Slot 1`、`Slot 2` 只能装载 agent pane，`Slot 3` 可装载普通 pane
+- 当 2 个槽位活跃时：`Slot 1` 只能装载 agent pane，`Slot 2` 可装载普通 pane
+- 当只活跃 1 个槽位时：若存在 agent，则 `Slot 1` 装载 agent；若没有 agent，则 `Slot 1` 可装载普通 pane
 - agent 来源：只管理 **当前 WezTerm 窗口**
 - 第一版只接管已有 pane，不负责新建 agent
 - 普通 pane 不出现在上方 agent 列表中
-- 普通 pane 通过独立动作选择，只能装载到 `Slot 3`
+- 普通 pane 通过独立动作选择，只能装载到“当前最右侧的活跃槽位”
 - 启动方式：从 **当前已有 agent pane 的 WezTerm 窗口** 执行 `atria-lite start`
 - 启动后重排当前窗口为 lite 布局，而不是新开一个空窗口
 - 当 3 个槽位都被占用时，不自动替换，必须弹提示让用户选择替换哪个槽位或取消
 - 当前窗口超过 3 个候选 pane 时：
   - 优先保留 agent pane
-  - 普通 pane 只可能作为 `Slot 3` 的候选内容
+  - 普通 pane 只可能作为“当前最右侧的活跃槽位”的候选内容
   - 未接管的 pane 自动移出当前 lite 窗口
 
 ## 运行形态
@@ -72,7 +73,7 @@
 
 ## 固定布局
 
-目标布局如下：
+目标布局如下（示意的是 **3 槽全部展开时** 的形态）：
 
 ```text
 ┌──────────────────────────────────────────────┐
@@ -89,6 +90,7 @@
 - monitor pane 固定在顶部
 - 下方工作区最多展开为 3 个 pane，且一旦展开到 2 个或 3 个时，所有 pane 始终同排
 - 不要求启动时就物理创建 3 个空 pane；槽位是逻辑概念，pane 按需拆分物化
+- 普通 pane 永远只占“当前最右侧的活跃槽位”
 - pane 一旦进入底部槽位，其输入、焦点、复制、滚动、全屏等行为全部保持 WezTerm 原生
 
 ## 组件边界
@@ -172,15 +174,18 @@
 当候选 pane 数量不超过 3 时：
 
 - 最多保留 3 个 agent pane
-- 普通 pane 只允许作为 `Slot 3` 的候选内容
+- 普通 pane 只允许作为“当前最右侧的活跃槽位”的候选内容
 - 因此“被自动保留的普通 pane”最多只能有 1 个
 
 当候选 pane 数量超过 3 时：
 
 1. 先为 `Slot 1`、`Slot 2`、`Slot 3` 选择可承载对象
-2. `Slot 1`、`Slot 2` 只从 agent pane 中选择
-3. `Slot 3` 优先接收剩余 agent pane；若没有剩余 agent pane，才允许接收 1 个普通 pane
-4. 其余未接管 pane 自动移出当前 lite 窗口
+2. agent pane 始终从左向右占据可用槽位
+3. 普通 pane 最多保留 1 个，并且只能落在“当前最右侧的活跃槽位”
+4. 若没有保留任何 agent，则最多只保留 1 个普通 pane，并放入 `Slot 1`
+5. 若保留了 1 个 agent，则普通 pane 只能进入 `Slot 2`
+6. 若保留了 2 个及以上 agent，则普通 pane 只能进入最右侧槽位；在 3 槽布局中即为 `Slot 3`
+7. 其余未接管 pane 自动移出当前 lite 窗口
 
 “移出当前 lite 窗口”要求：
 
@@ -192,26 +197,32 @@
 
 ### `Slot 1`
 
-- 只能绑定 agent pane
-- 空时优先承载第一个装入的 agent
+- 当存在 2 个或 3 个活跃槽位时，只能绑定 agent pane
+- 当只存在 1 个活跃槽位且当前没有 agent 时，可以绑定 1 个普通 pane
+- 有 agent 时，优先承载第一个装入的 agent
 
 ### `Slot 2`
 
-- 只能绑定 agent pane
-- 空时承载第二个装入的 agent
+- 当存在 3 个活跃槽位时，只能绑定 agent pane
+- 当只存在 2 个活跃槽位时，是当前最右侧活跃槽位，可绑定 agent pane 或普通 pane
+- 有两个 agent 时，优先承载第二个 agent
+- 有一个 agent 且需要显示普通 pane 时，可承载该普通 pane
 
 ### `Slot 3`
 
-- 可以绑定 agent pane
-- 也可以绑定普通 pane
+- 只在 3 槽布局中存在
+- 是当前最右侧活跃槽位，可绑定 agent pane 或普通 pane
 - 普通 pane 不能自动出现在 agent 列表，只能通过独立动作进入这里
 
 ### 物理展开规则
 
-- 只有 `Slot 1` 被占用时，底部工作区可以只有 1 个 pane
-- 当 `Slot 2` 或 `Slot 3` 被占用时，底部工作区按需拆分为 2 个或 3 个 pane
+- 没有 agent 且保留了 1 个普通 pane 时，底部工作区只保留 `Slot 1`
+- 只有 `Slot 1` 被 agent 占用时，底部工作区可以只有 1 个 pane
+- 当需要展示“1 个 agent + 1 个普通 pane”时，底部工作区展开为 `Slot 1 + Slot 2`
+- 当需要展示“2 个 agent + 1 个普通 pane”或“3 个 agent”时，底部工作区展开为 3 个 pane
 - 一旦存在多个底部 pane，它们必须同排显示
 - 不使用“空白占位 pane”来凑满三栏
+- 当 agent 数量增加时，已保留的普通 pane 会右移到新的最右侧活跃槽位
 
 ## 装载规则
 
@@ -229,13 +240,18 @@
 
 - 槽位为空
 - 槽位类型允许该 pane 进入
+- 若当前最右侧活跃槽位已被普通 pane 占用，而新 agent 需要插入其左侧，则普通 pane 自动右移到新的最右侧活跃槽位
 
-### 普通 pane 进入 `Slot 3` 时
+### 普通 pane 装载时
 
 - 通过独立动作打开普通 pane 选择器
 - 选择器仅列出当前窗口中的普通 pane
-- 选中后装载到 `Slot 3`
+- 选中后装载到“当前最右侧的活跃槽位”
 - 普通 pane 不参与上方主 agent 列表排序
+- 若当前没有 agent，则普通 pane 进入 `Slot 1`
+- 若当前有 1 个 agent，则普通 pane 进入 `Slot 2`
+- 若当前有 2 个 agent，则普通 pane 进入 `Slot 3`
+- 若当前已有 3 个 agent，则选择普通 pane 时只能替换 `Slot 3` 或取消
 
 ### 满槽时
 
@@ -250,6 +266,7 @@
 
 - 替换 `Slot 3` 时，即使当前装的是普通 pane，也必须显式确认
 - 替换动作只改变 lite 工作台的槽位绑定，不影响 agent 进程本身的生存
+- 选择普通 pane 且当前为“3 个 agent 已满”时，只允许替换 `Slot 3`
 
 ## 交互流程
 
@@ -268,7 +285,7 @@
 1. 用户触发“选择普通 pane”动作
 2. monitor 打开普通 pane 选择器
 3. 只展示当前窗口中非 agent pane
-4. 选中后装载到 `Slot 3`
+4. 选中后装载到当前最右侧活跃槽位；如果当前没有 agent，则落在 `Slot 1`
 
 ## 当前窗口过滤
 
@@ -314,6 +331,7 @@
 
 - 允许进入 lite 布局
 - 顶部 monitor 显示空状态和引导文案
+- 若当前窗口保留了 1 个普通 pane，则该 pane 可以落在 `Slot 1`
 - 不自动新建 agent
 
 ### 窗口重排失败
