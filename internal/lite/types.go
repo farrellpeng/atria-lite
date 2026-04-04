@@ -49,7 +49,7 @@ type MonitorContext struct {
 
 func (ctx MonitorContext) Validate() error {
 	switch {
-	case ctx.SelfPaneID == 0:
+	case ctx.SelfPaneID == 0 && ctx.StarterPaneID == 0 && ctx.WindowID == 0 && ctx.TabID == 0:
 		return fmt.Errorf("self pane id is required")
 	case ctx.StarterPaneID == 0:
 		return fmt.Errorf("starter pane id is required")

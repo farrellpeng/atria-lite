@@ -59,7 +59,7 @@ func runStart(args []string) error {
 	if len(args) > 0 {
 		return usageError{msg: "start does not accept arguments"}
 	}
-	return nil
+	return lite.Start(lite.StartOptions{})
 }
 
 func runMonitor(args []string) error {
@@ -118,7 +118,7 @@ func usageText() string {
   atria-lite monitor --context-base64 <value>
 
 Commands:
-  start    Placeholder entry point for the lite launcher
+  start    Start the lite WezTerm monitor layout
   monitor  Decode a MonitorContext passed via CLI
 `
 }
