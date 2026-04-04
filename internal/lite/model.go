@@ -20,6 +20,9 @@ const (
 
 type windowPaneClient interface {
 	ListWindowPanes(windowID int) ([]wezterm.PaneInfo, error)
+	ReadScreen(sessionID string, lines int) (string, error)
+	GetVar(sessionID, varName string) (string, error)
+	MovePaneToNewTab(paneID, windowID int) error
 }
 
 type Model struct {
@@ -51,7 +54,7 @@ func NewModel(client windowPaneClient, ctx MonitorContext) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return refreshWindowPanes(m.client, m.ctx.WindowID)
+	return refreshWindowPanes(m.client, m.ctx)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -65,8 +68,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncReplacePrompt()
 		m.clampCursor()
 		m.statusText = m.modeStatusText()
+	case candidatePanesLoadedMsg:
+		m.panes = msg.panes
+		m.reconcileBindings()
+		m.syncReplacePrompt()
+		m.clampCursor()
+		m.statusText = m.modeStatusText()
 	case windowPanesLoadFailedMsg:
 		m.statusText = fmt.Sprintf("Refresh failed: %v", msg.err)
+	case slotActionCompletedMsg:
+		m.mode = ModeList
+		m.replacePane = CandidatePane{}
+		m.bindings = normalizeBindings(msg.bindings)
+		m.ctx.SlotBindings = m.bindings
+		m.ctx.WorkspacePaneIDs = bindingPaneIDs(m.bindings)
+		m.clampCursor()
+		m.statusText = msg.statusText
+	case slotActionFailedMsg:
+		m.statusText = fmt.Sprintf("Action failed: %v", msg.err)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -79,14 +98,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ModeList:
 		return m.handleListKey(msg)
 	case ModeReplacePrompt, ModeNormalPanePicker:
-		switch msg.String() {
-		case "esc", "q":
-			m.mode = ModeList
-			m.replacePane = CandidatePane{}
-			m.statusText = m.modeStatusText()
-		case "r":
-			return m, refreshWindowPanes(m.client, m.ctx.WindowID)
+		if m.mode == ModeReplacePrompt {
+			return m.handleReplacePromptKey(msg)
 		}
+		return m.handleNormalPanePickerKey(msg)
 	}
 
 	return m, nil
@@ -121,11 +136,72 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusText = fmt.Sprintf("Loaded %s", paneLabel(selected))
 	case "n":
 		m.mode = ModeNormalPanePicker
+		m.cursor = 0
 		m.statusText = m.modeStatusText()
 	case "r":
-		return m, refreshWindowPanes(m.client, m.ctx.WindowID)
+		return m, refreshWindowPanes(m.client, m.ctx)
 	}
 
+	return m, nil
+}
+
+func (m Model) handleNormalPanePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j":
+		if last := len(m.normalPanes()) - 1; m.cursor < last {
+			m.cursor++
+		}
+	case "enter":
+		normals := m.normalPanes()
+		if len(normals) == 0 {
+			return m, nil
+		}
+		selected := normals[m.cursor]
+		nextBindings, prompt := PlanNormalLoad(m.bindings, selected)
+		if prompt {
+			m.mode = ModeReplacePrompt
+			m.replacePane = selected
+			m.statusText = m.modeStatusText()
+			return m, nil
+		}
+		m.mode = ModeList
+		m.bindings = nextBindings
+		m.ctx.SlotBindings = nextBindings
+		m.ctx.WorkspacePaneIDs = bindingPaneIDs(nextBindings)
+		m.clampCursor()
+		m.statusText = fmt.Sprintf("Loaded %s", paneLabel(selected))
+	case "esc", "q":
+		m.mode = ModeList
+		m.replacePane = CandidatePane{}
+		m.clampCursor()
+		m.statusText = m.modeStatusText()
+	case "r":
+		return m, refreshWindowPanes(m.client, m.ctx)
+	}
+	return m, nil
+}
+
+func (m Model) handleReplacePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.mode = ModeList
+		m.replacePane = CandidatePane{}
+		m.statusText = m.modeStatusText()
+		return m, nil
+	case "r":
+		return m, refreshWindowPanes(m.client, m.ctx)
+	case "1", "2", "3":
+		target := SlotID("slot" + msg.String())
+		if !isAllowedReplaceSlot(allowedReplaceSlots(m.bindings, m.replacePane), target) {
+			m.statusText = fmt.Sprintf("%s cannot replace %s", paneLabel(m.replacePane), target)
+			return m, nil
+		}
+		return m, replaceSlot(m.client, m.ctx, m.bindings, m.replacePane, target)
+	}
 	return m, nil
 }
 
@@ -176,18 +252,25 @@ func (m *Model) reconcileBindings() {
 	m.ctx.WorkspacePaneIDs = bindingPaneIDs(m.bindings)
 
 	if candidate, ok := livePaneByID[m.replacePane.PaneID]; ok {
-		m.replacePane = candidate
+		if candidate.Kind == m.replacePane.Kind {
+			m.replacePane = candidate
+		}
 	}
 }
 
 func (m *Model) clampCursor() {
-	agents := m.agentPanes()
-	if len(agents) == 0 {
+	var panes []CandidatePane
+	if m.mode == ModeNormalPanePicker {
+		panes = m.normalPanes()
+	} else {
+		panes = m.agentPanes()
+	}
+	if len(panes) == 0 {
 		m.cursor = 0
 		return
 	}
-	if m.cursor >= len(agents) {
-		m.cursor = len(agents) - 1
+	if m.cursor >= len(panes) {
+		m.cursor = len(panes) - 1
 	}
 }
 
@@ -227,7 +310,7 @@ func (m *Model) syncReplacePrompt() {
 	}
 	for _, pane := range m.panes {
 		if pane.PaneID == m.replacePane.PaneID {
-			if pane.Kind != OccupantAgent {
+			if pane.Kind != m.replacePane.Kind {
 				m.mode = ModeList
 				m.replacePane = CandidatePane{}
 				return
@@ -250,4 +333,13 @@ func (m Model) modeStatusText() string {
 		return fmt.Sprintf("%d normal pane(s) available", len(m.normalPanes()))
 	}
 	return fmt.Sprintf("%d agent pane(s) visible", len(m.agentPanes()))
+}
+
+func isAllowedReplaceSlot(slots []SlotID, target SlotID) bool {
+	for _, slot := range slots {
+		if slot == target {
+			return true
+		}
+	}
+	return false
 }

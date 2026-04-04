@@ -45,7 +45,11 @@ func (m Model) viewAgentList() []string {
 			binding = string(slot)
 		}
 
-		lines = append(lines, fmt.Sprintf("%s %s [%s]", cursor, paneLabel(pane), binding))
+		label := paneLabel(pane)
+		if pane.CWD != "" {
+			label = fmt.Sprintf("%s %s", label, pane.CWD)
+		}
+		lines = append(lines, fmt.Sprintf("%s %s [%s]", cursor, label, binding))
 	}
 	return lines
 }
@@ -54,6 +58,9 @@ func (m Model) viewReplacePrompt() []string {
 	lines := []string{
 		"Replace Prompt",
 		fmt.Sprintf("  All 3 slots are full. %s would require a replacement.", paneLabel(m.replacePane)),
+	}
+	for _, slot := range allowedReplaceSlots(m.bindings, m.replacePane) {
+		lines = append(lines, fmt.Sprintf("  Press %s to replace %s.", strings.TrimPrefix(string(slot), "slot"), slot))
 	}
 	lines = append(lines, "  Press esc to go back.")
 	return lines
@@ -66,8 +73,12 @@ func (m Model) viewNormalPanePicker() []string {
 		return append(lines, "  No normal panes available.")
 	}
 
-	for _, pane := range normals {
-		lines = append(lines, fmt.Sprintf("  - %s", paneLabel(pane)))
+	for i, pane := range normals {
+		cursor := " "
+		if i == m.cursor {
+			cursor = ">"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s", cursor, paneLabel(pane)))
 	}
 	lines = append(lines, "  Press esc to return.")
 	return lines
@@ -88,7 +99,9 @@ func (m Model) viewSlotSummary() []string {
 func (m Model) viewFooter() string {
 	help := "enter load agent | n normal panes | r refresh"
 	switch m.mode {
-	case ModeReplacePrompt, ModeNormalPanePicker:
+	case ModeReplacePrompt:
+		help = "1/2/3 replace slot | r refresh | esc back"
+	case ModeNormalPanePicker:
 		help = "r refresh | esc back"
 	}
 	if m.statusText == "" {

@@ -28,6 +28,7 @@ type CandidatePane struct {
 	WindowID  int
 	TabID     int
 	Title     string
+	CWD       string
 	Kind      OccupantKind
 	AgentType model.AgentType
 }

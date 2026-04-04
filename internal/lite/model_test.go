@@ -2,6 +2,7 @@ package lite
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +11,228 @@ import (
 	"github.com/sethdeckard/atria/internal/model"
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
 )
+
+func TestRefreshUsesDetectAgentThenScreenFallback(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "Claude Code"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+		readScreens: map[int]string{
+			12: "OpenAI Codex\n›",
+		},
+		getVars: map[int]string{
+			11: "/projects/alpha",
+			12: "/projects/bravo",
+		},
+	}
+	m := NewModel(client, ctx)
+
+	msg := runCmd(t, m.Init())
+	updated, _ := m.Update(msg)
+	got := updated.(Model)
+
+	if len(client.readScreenCalls) != 1 || client.readScreenCalls[0] != "12" {
+		t.Fatalf("ReadScreen() calls = %#v, want fallback for pane 12 only", client.readScreenCalls)
+	}
+	if len(got.panes) != 2 {
+		t.Fatalf("panes len = %d, want 2", len(got.panes))
+	}
+	if got.panes[0].AgentType != model.AgentClaude {
+		t.Fatalf("first pane agent = %q, want claude", got.panes[0].AgentType)
+	}
+	if got.panes[1].AgentType != model.AgentCodex {
+		t.Fatalf("second pane agent = %q, want codex from screen fallback", got.panes[1].AgentType)
+	}
+	if got.panes[1].Kind != OccupantAgent {
+		t.Fatalf("second pane kind = %q, want agent", got.panes[1].Kind)
+	}
+}
+
+func TestRefreshBuildsDisplayRowsFromDiscoveredCWD(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "Claude Code"},
+		},
+		getVars: map[int]string{
+			11: "/projects/alpha",
+		},
+	}
+	m := NewModel(client, ctx)
+
+	msg := runCmd(t, m.Init())
+	updated, _ := m.Update(msg)
+	got := updated.(Model)
+
+	if !strings.Contains(got.View(), "/projects/alpha") {
+		t.Fatalf("View() = %q, want discovered CWD to appear in display rows", got.View())
+	}
+}
+
+func TestSelectingNormalPaneFromPickerLoadsIntoRightmostSlot(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		},
+	}
+	m := NewModel(nil, ctx)
+	updated, _ := m.Update(windowPanesLoadedMsg{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "Claude Code"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+	})
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	got := updated.(Model)
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 12, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if got.mode != ModeList {
+		t.Fatalf("mode = %v, want %v after loading normal pane", got.mode, ModeList)
+	}
+}
+
+func TestReplacingSlotMovesOldPaneToNewTab(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+			{Slot: Slot2, PaneID: 12, Kind: OccupantAgent},
+			{Slot: Slot3, PaneID: 13, Kind: OccupantAgent},
+		},
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "Claude Code"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "OpenAI Codex"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "OC | old (opencode)"},
+			{PaneID: 99, WindowID: 7, TabID: 70, Title: "Claude Code"},
+		},
+	}
+	m := NewModel(client, ctx)
+	updated, _ := m.Update(windowPanesLoadedMsg{
+		panes: client.panes,
+	})
+	m = updated.(Model)
+
+	for i := 0; i < 3; i++ {
+		updated, _ = m.Update(keyMsg("j"))
+		m = updated.(Model)
+	}
+
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.mode != ModeReplacePrompt {
+		t.Fatalf("mode = %v, want %v before choosing replacement", m.mode, ModeReplacePrompt)
+	}
+
+	updated, cmd := m.Update(keyMsg("3"))
+	m = updated.(Model)
+	msg := runCmd(t, cmd)
+	updated, _ = m.Update(msg)
+	got := updated.(Model)
+
+	if len(client.movePaneCalls) != 1 {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want 1 call", client.movePaneCalls)
+	}
+	if client.movePaneCalls[0].PaneID != 13 || client.movePaneCalls[0].WindowID != 7 {
+		t.Fatalf("MovePaneToNewTab() call = %#v, want pane 13 in window 7", client.movePaneCalls[0])
+	}
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 12, Kind: OccupantAgent},
+		{Slot: Slot3, PaneID: 99, Kind: OccupantAgent},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if got.mode != ModeList {
+		t.Fatalf("mode = %v, want %v after replacement", got.mode, ModeList)
+	}
+}
+
+func TestSelectingNormalPaneWithThreeAgentsOnlyAllowsReplacingSlot3(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+			{Slot: Slot2, PaneID: 12, Kind: OccupantAgent},
+			{Slot: Slot3, PaneID: 13, Kind: OccupantAgent},
+		},
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "Claude Code"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "OpenAI Codex"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "OC | old (opencode)"},
+			{PaneID: 21, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+	}
+	m := NewModel(client, ctx)
+	updated, _ := m.Update(windowPanesLoadedMsg{panes: client.panes})
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.mode != ModeReplacePrompt {
+		t.Fatalf("mode = %v, want %v before choosing replacement", m.mode, ModeReplacePrompt)
+	}
+
+	updated, cmd := m.Update(keyMsg("1"))
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("cmd = %v, want nil when normal pane tries to replace slot1", cmd)
+	}
+	if len(client.movePaneCalls) != 0 {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want none", client.movePaneCalls)
+	}
+
+	updated, cmd = m.Update(keyMsg("3"))
+	m = updated.(Model)
+	msg := runCmd(t, cmd)
+	updated, _ = m.Update(msg)
+	got := updated.(Model)
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 12, Kind: OccupantAgent},
+		{Slot: Slot3, PaneID: 21, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if len(client.movePaneCalls) != 1 || client.movePaneCalls[0].PaneID != 13 {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want replaced slot3 pane moved out", client.movePaneCalls)
+	}
+}
 
 func TestMonitorFiltersToWindowAndExcludesSelf(t *testing.T) {
 	ctx := MonitorContext{
@@ -375,8 +598,12 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 }
 
 type stubWindowPaneClient struct {
-	panes []wezterm.PaneInfo
-	err   error
+	panes           []wezterm.PaneInfo
+	err             error
+	readScreens     map[int]string
+	getVars         map[int]string
+	readScreenCalls []string
+	movePaneCalls   []movePaneCall
 }
 
 func (s *stubWindowPaneClient) ListWindowPanes(windowID int) ([]wezterm.PaneInfo, error) {
@@ -384,4 +611,37 @@ func (s *stubWindowPaneClient) ListWindowPanes(windowID int) ([]wezterm.PaneInfo
 		return nil, s.err
 	}
 	return append([]wezterm.PaneInfo(nil), s.panes...), nil
+}
+
+func (s *stubWindowPaneClient) ReadScreen(sessionID string, lines int) (string, error) {
+	s.readScreenCalls = append(s.readScreenCalls, sessionID)
+	if s.readScreens == nil {
+		return "", nil
+	}
+	paneID := 0
+	_, err := fmt.Sscanf(sessionID, "%d", &paneID)
+	if err != nil {
+		return "", err
+	}
+	return s.readScreens[paneID], nil
+}
+
+func (s *stubWindowPaneClient) GetVar(sessionID, varName string) (string, error) {
+	if varName != "path" {
+		return "", nil
+	}
+	if s.getVars == nil {
+		return "", nil
+	}
+	paneID := 0
+	_, err := fmt.Sscanf(sessionID, "%d", &paneID)
+	if err != nil {
+		return "", err
+	}
+	return s.getVars[paneID], nil
+}
+
+func (s *stubWindowPaneClient) MovePaneToNewTab(paneID, windowID int) error {
+	s.movePaneCalls = append(s.movePaneCalls, movePaneCall{PaneID: paneID, WindowID: windowID})
+	return nil
 }
