@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sethdeckard/atria/internal/lite"
+	"github.com/sethdeckard/atria/internal/terminal/wezterm"
 )
 
 type usageError struct {
@@ -91,6 +92,13 @@ func runMonitor(args []string) error {
 	ctx, err := lite.DecodeMonitorContext(encodedContext)
 	if err != nil {
 		return usageError{msg: err.Error()}
+	}
+	if ctx.SelfPaneID == 0 && ctx.StarterPaneID != 0 && ctx.WindowID != 0 && ctx.TabID != 0 {
+		selfPaneID, err := wezterm.CurrentPaneIDFromEnv()
+		if err != nil {
+			return usageError{msg: err.Error()}
+		}
+		ctx.SelfPaneID = selfPaneID
 	}
 	if err := ctx.Validate(); err != nil {
 		return usageError{msg: err.Error()}

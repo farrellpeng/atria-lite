@@ -20,10 +20,19 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeMonitorContext() error = %v", err)
 	}
+	contextMissingSelf, err := lite.EncodeMonitorContext(lite.MonitorContext{
+		StarterPaneID: 2,
+		WindowID:      3,
+		TabID:         4,
+	})
+	if err != nil {
+		t.Fatalf("EncodeMonitorContext() missing self error = %v", err)
+	}
 
 	tests := []struct {
 		name       string
 		args       []string
+		selfPaneID string
 		wantCode   int
 		wantStdout string
 		wantStderr string
@@ -71,6 +80,12 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 			wantCode: 0,
 		},
 		{
+			name:       "monitor fills self pane id from env when context is missing it",
+			args:       []string{"monitor", "--context-base64", contextMissingSelf},
+			selfPaneID: "99",
+			wantCode:   0,
+		},
+		{
 			name:       "monitor invalid context",
 			args:       []string{"monitor", "--context-base64", "e30"},
 			wantCode:   2,
@@ -86,6 +101,9 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.selfPaneID != "" {
+				t.Setenv("WEZTERM_PANE", tt.selfPaneID)
+			}
 			code, stdout, stderr := captureRun(t, tt.args)
 			if code != tt.wantCode {
 				t.Fatalf("run() exit code = %d, want %d", code, tt.wantCode)

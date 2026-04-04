@@ -1,9 +1,7 @@
 package lite
 
 import (
-	"encoding/base64"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -73,25 +71,16 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 		t.Fatalf("ActivatePane() calls = %v, want [999]", runtime.activateCalls)
 	}
 
-	if len(got.Command) < 6 {
-		t.Fatalf("SplitPane() Command = %v, want shell wrapper args", got.Command)
+	if len(got.Command) != 4 {
+		t.Fatalf("SplitPane() Command = %v, want 4 args", got.Command)
 	}
-	if !reflect.DeepEqual(got.Command[:2], []string{"bash", "-lc"}) {
-		t.Fatalf("SplitPane() Command prefix = %v, want bash -lc", got.Command[:2])
-	}
-	if got.Command[3] != "atria-lite-monitor-bootstrap" {
-		t.Fatalf("SplitPane() bootstrap argv0 = %q, want atria-lite-monitor-bootstrap", got.Command[3])
-	}
-	if !reflect.DeepEqual(got.Command[5:], []string{"atria-lite", "monitor"}) {
-		t.Fatalf("SplitPane() final command prefix = %v, want [atria-lite monitor]", got.Command[5:])
+	if !reflect.DeepEqual(got.Command[:3], []string{"atria-lite", "monitor", "--context-base64"}) {
+		t.Fatalf("SplitPane() Command prefix = %v, want atria-lite monitor --context-base64", got.Command[:3])
 	}
 
-	ctx, err := decodeMonitorContextFromWrapperCommand(got.Command, 999)
+	ctx, err := DecodeMonitorContext(got.Command[3])
 	if err != nil {
-		t.Fatalf("decodeMonitorContextFromWrapperCommand() error = %v", err)
-	}
-	if err := ctx.Validate(); err != nil {
-		t.Fatalf("monitor context Validate() error = %v", err)
+		t.Fatalf("DecodeMonitorContext() error = %v", err)
 	}
 
 	wantBindings := []SlotBinding{
@@ -113,8 +102,8 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 	if ctx.TabID != 701 {
 		t.Fatalf("TabID = %d, want 701", ctx.TabID)
 	}
-	if ctx.SelfPaneID != 999 {
-		t.Fatalf("SelfPaneID = %d, want 999", ctx.SelfPaneID)
+	if ctx.SelfPaneID != 0 {
+		t.Fatalf("SelfPaneID = %d, want 0 before monitor fills from env", ctx.SelfPaneID)
 	}
 }
 
@@ -297,14 +286,3 @@ func installMockStartRuntime(t *testing.T, runtime *mockStartRuntime) {
 }
 
 var _ wezTermRuntime = (*mockStartRuntime)(nil)
-
-func decodeMonitorContextFromWrapperCommand(command []string, selfPaneID int) (MonitorContext, error) {
-	if len(command) < 6 {
-		return MonitorContext{}, nil
-	}
-
-	jsonTemplate := command[4]
-	json := strings.ReplaceAll(jsonTemplate, monitorSelfPanePlaceholder, strconv.Itoa(selfPaneID))
-	encoded := base64.RawURLEncoding.EncodeToString([]byte(json))
-	return DecodeMonitorContext(encoded)
-}
