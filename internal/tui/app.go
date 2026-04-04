@@ -322,6 +322,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.narrowActive = true
 		}
 		m.chat.setSize(msg.Width, msg.Height)
+		// When stream panel is open, update textarea width for panel
+		if m.streamOpen {
+			innerWidth := msg.Width - 6
+			if innerWidth > 0 {
+				m.chat.input.SetWidth(innerWidth)
+			}
+		}
 		m.adjustScroll()
 		m.adjustBrowserScroll()
 		if r, ok := m.backend.(interface{ Resize(int, int) }); ok {
@@ -594,7 +601,11 @@ func (m Model) viewProjectList() string {
 			projectName = m.rows[m.cursor].displayName
 			projectDir = contractHome(m.rows[m.cursor].project.Dir)
 		}
-		sb.WriteString(renderStreamPanel(session, projectName, projectDir, m.width, layout.panelHeight, session != nil && m.quickResponseArmedFor(session.SessionID)))
+		sb.WriteString(renderStreamPanelWithChat(
+			session, projectName, projectDir, m.width, layout.panelHeight,
+			session != nil && m.quickResponseArmedFor(session.SessionID),
+			&m.chat, true, m.spinnerFrame,
+		))
 	}
 
 	var selected *projectRow
@@ -628,12 +639,17 @@ func (m Model) viewProjectList() string {
 	return sb.String()
 }
 
-// renderStreamPanel renders the live screen output panel for the selected agent.
-func renderStreamPanel(session *model.AgentSession, projectName, projectDir string, width, height int, quickResponseArmed bool) string {
+// renderStreamPanelWithChat renders the stream panel with optional inline chat.
+func renderStreamPanelWithChat(
+	session *model.AgentSession, projectName, projectDir string,
+	width, height int,
+	quickResponseArmed bool,
+	chat *chatView,
+	useChat bool,
+	spinnerFrame int,
+) string {
 	var sb strings.Builder
 
-	// Keep one terminal column of slack so a visually wider glyph in the
-	// stream content cannot wrap and push the header off-screen.
 	boxWidth := width - 2
 	if boxWidth < 6 {
 		boxWidth = 6
@@ -662,15 +678,16 @@ func renderStreamPanel(session *model.AgentSession, projectName, projectDir stri
 	// Top border with header
 	if session != nil && projectName != "" {
 		agentType := strings.ToUpper(string(session.Type)[:1]) + string(session.Type)[1:]
-		leftText := " " + projectName + " \u00b7 " + agentType + " \u00b7 " + projectDir + " "
 		rightText := " v:close "
-		maxLeftWidth := boxWidth - 2 - lipgloss.Width(rightText) - 1 // -2 for ┌┐, -1 for min fill
+		if useChat {
+			rightText = " Ctrl+D:send  Esc:close "
+		}
+		leftText := " " + projectName + " \u00b7 " + agentType + " \u00b7 " + projectDir + " "
+		maxLeftWidth := boxWidth - 2 - lipgloss.Width(rightText) - 1
 		if leftWidth := lipgloss.Width(leftText); leftWidth > maxLeftWidth {
-			// Truncate path first, then project name if still too wide
 			prefix := " " + projectName + " \u00b7 " + agentType + " \u00b7 "
-			availForDir := maxLeftWidth - lipgloss.Width(prefix) - 1 // -1 for trailing space
+			availForDir := maxLeftWidth - lipgloss.Width(prefix) - 1
 			if availForDir >= 4 {
-				// Truncate dir from the left: …/tail (rune-safe)
 				dirRunes := []rune(projectDir)
 				truncDir := ""
 				for i := len(dirRunes) - 1; i >= 0; i-- {
@@ -682,8 +699,6 @@ func renderStreamPanel(session *model.AgentSession, projectName, projectDir stri
 				}
 				leftText = prefix + "\u2026" + truncDir + " "
 			}
-			// If path truncation wasn't possible or leftText is still too wide,
-			// drop path and truncate name to guarantee fit.
 			if lipgloss.Width(leftText) > maxLeftWidth {
 				truncName := ""
 				for _, r := range projectName {
@@ -694,7 +709,6 @@ func renderStreamPanel(session *model.AgentSession, projectName, projectDir stri
 					truncName += string(r)
 				}
 				leftText = " " + truncName + "\u2026 \u00b7 " + agentType + " "
-				// Final clamp: if even "…· Type " overflows, hard-truncate
 				if lipgloss.Width(leftText) > maxLeftWidth {
 					leftText = " "
 				}
@@ -712,53 +726,60 @@ func renderStreamPanel(session *model.AgentSession, projectName, projectDir stri
 	}
 	sb.WriteString("\n")
 
-	contentLines := height - 2 // account for top/bottom borders
+	contentLines := height - 2 // top + bottom borders
 	if contentLines < 1 {
 		contentLines = 1
 	}
 
-	if session == nil || strings.TrimSpace(session.LastScreen) == "" {
-		// Placeholder
-		placeholder := "no output"
-		pad := innerWidth - lipgloss.Width(placeholder)
-		if pad < 0 {
-			pad = 0
+	if useChat && chat != nil {
+		// Allocate: output + sep + entries + hint = 4 fixed lines
+		outputLines := contentLines - 4
+		if outputLines < 2 {
+			outputLines = 2
 		}
-		sb.WriteString(borderStyle.Render(" \u2502") + " " + dimStyle.Render(placeholder) + strings.Repeat(" ", pad) + " " + borderStyle.Render("\u2502"))
-		sb.WriteString("\n")
-		for i := 1; i < contentLines; i++ {
-			sb.WriteString(borderStyle.Render(" \u2502") + strings.Repeat(" ", innerWidth+2) + borderStyle.Render("\u2502"))
-			sb.WriteString("\n")
-		}
+		sb.WriteString(chat.renderInline(session, outputLines, innerWidth, spinnerFrame))
 	} else {
-		// Split screen content, trim trailing blank lines, take from bottom
-		lines := strings.Split(sanitizeBoxText(session.LastScreen), "\n")
-		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-			lines = lines[:len(lines)-1]
-		}
-		if len(lines) > contentLines {
-			lines = lines[len(lines)-contentLines:]
-		}
-		for _, line := range lines {
-			line = truncateToWidth(line, innerWidth)
-			lineWidth := lipgloss.Width(line)
-			pad := innerWidth - lineWidth
+		// Original behavior: just output
+		if session == nil || strings.TrimSpace(session.LastScreen) == "" {
+			placeholder := "no output"
+			pad := innerWidth - lipgloss.Width(placeholder)
 			if pad < 0 {
 				pad = 0
 			}
-			sb.WriteString(borderStyle.Render(" \u2502") + " " + line + strings.Repeat(" ", pad) + " " + borderStyle.Render("\u2502"))
+			sb.WriteString(borderStyle.Render(" \u2502") + " " + dimStyle.Render(placeholder) + strings.Repeat(" ", pad) + " " + borderStyle.Render("\u2502"))
 			sb.WriteString("\n")
-		}
-		// Pad remaining lines
-		for i := len(lines); i < contentLines; i++ {
-			sb.WriteString(borderStyle.Render(" \u2502") + strings.Repeat(" ", innerWidth+2) + borderStyle.Render("\u2502"))
-			sb.WriteString("\n")
+			for i := 1; i < contentLines; i++ {
+				sb.WriteString(borderStyle.Render(" \u2502") + strings.Repeat(" ", innerWidth+2) + borderStyle.Render("\u2502"))
+				sb.WriteString("\n")
+			}
+		} else {
+			lines := strings.Split(sanitizeBoxText(session.LastScreen), "\n")
+			for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+				lines = lines[:len(lines)-1]
+			}
+			if len(lines) > contentLines {
+				lines = lines[len(lines)-contentLines:]
+			}
+			for _, line := range lines {
+				line = truncateToWidth(line, innerWidth)
+				lineWidth := lipgloss.Width(line)
+				pad := innerWidth - lineWidth
+				if pad < 0 {
+					pad = 0
+				}
+				sb.WriteString(borderStyle.Render(" \u2502") + " " + line + strings.Repeat(" ", pad) + " " + borderStyle.Render("\u2502"))
+				sb.WriteString("\n")
+			}
+			for i := len(lines); i < contentLines; i++ {
+				sb.WriteString(borderStyle.Render(" \u2502") + strings.Repeat(" ", innerWidth+2) + borderStyle.Render("\u2502"))
+				sb.WriteString("\n")
+			}
 		}
 	}
 
 	// Bottom border
 	bottomBorder := "└" + strings.Repeat("─", boxWidth-2) + "┘"
-	if session != nil && session.Status == model.StatusNeedsInput {
+	if session != nil && session.Status == model.StatusNeedsInput && !useChat {
 		hintText := " ctrl+r:respond "
 		if quickResponseArmed {
 			hintText = " y:accept  esc:reject  1-9:choose "
@@ -780,6 +801,12 @@ func renderStreamPanel(session *model.AgentSession, projectName, projectDir stri
 	sb.WriteString(borderStyle.Render(" " + bottomBorder))
 
 	return sb.String()
+}
+
+// renderStreamPanel is a backward-compatible wrapper that renders the panel
+// without chat (useChat=false).
+func renderStreamPanel(session *model.AgentSession, projectName, projectDir string, width, height int, quickResponseArmed bool) string {
+	return renderStreamPanelWithChat(session, projectName, projectDir, width, height, quickResponseArmed, nil, false, 0)
 }
 
 // maxVisibleRows returns how many agent rows fit in the current terminal.
@@ -820,11 +847,8 @@ func (m Model) projectListLayout() projectListLayout {
 		usable = 4
 	}
 
-	// In narrow mode, prefer more stream height for prompt detection + ctrl+r.
-	idealMinPanel := 3
-	if lp.mode != layoutWide {
-		idealMinPanel = 7
-	}
+	// Minimum panel height: at least 10 lines for stream panel (output + chat entries + textarea).
+	idealMinPanel := 10
 	// Clamp to what actually fits: at least one row must remain.
 	// On very short terminals this may be less than 3.
 	minPanel := idealMinPanel
@@ -1323,6 +1347,20 @@ func (m Model) handleProjectListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Stream):
 		m.streamOpen = !m.streamOpen
 		m.adjustScroll()
+		// When opening, sync chatSessionID to selected row
+		if m.streamOpen && m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].session != nil {
+			newSessionID := m.rows[m.cursor].session.SessionID
+			if m.chatSessionID != newSessionID {
+				m.chatSessionID = newSessionID
+				m.chat = newChatView()
+			}
+			m.chat.setSize(m.width, m.height)
+			innerWidth := m.width - 6
+			if innerWidth > 0 {
+				m.chat.input.SetWidth(innerWidth)
+			}
+			m.chat.input.Focus()
+		}
 		return m, m.startVisibleRefreshIfNeeded()
 
 	case key.Matches(msg, keys.Enter):
@@ -1341,6 +1379,71 @@ func (m Model) handleProjectListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = false
 		return m, nil
 	}
+
+	// Chat input when stream panel is open
+	if m.streamOpen && m.cursor >= 0 && m.cursor < len(m.rows) && m.rows[m.cursor].session != nil {
+		row := m.rows[m.cursor]
+		session := row.session
+
+		switch {
+		case key.Matches(msg, keys.CtrlD):
+			text := m.chat.input.Value()
+			if strings.TrimSpace(text) != "" {
+				m.chat.input.Reset()
+				m.chat.addEntry(chatEntry{Timestamp: time.Now(), Direction: "sent", Text: text})
+				return m, sendPrompt(m.backend, session.SessionID, text, session.ProjectDir, session.Type)
+			}
+			return m, nil
+
+		case key.Matches(msg, keys.Escape):
+			m.streamOpen = false
+			m.adjustScroll()
+			return m, nil
+
+		case key.Matches(msg, keys.Tab):
+			if m.chat.completion != nil && m.chat.completion.active {
+				m.chat.nextCompletion()
+				return m, nil
+			}
+			inputText := m.chat.input.Value()
+			if strings.Contains(inputText, "@") {
+				m.chat.setProjectDir(session.ProjectDir)
+				m.chat.triggerCompletion()
+			}
+			return m, nil
+
+		case key.Matches(msg, keys.ShiftTab):
+			if m.chat.completion != nil && m.chat.completion.active {
+				m.chat.prevCompletion()
+			}
+			return m, nil
+
+		case key.Matches(msg, keys.Enter):
+			if m.chat.completion != nil && m.chat.completion.active {
+				m.chat.applyCompletion()
+				return m, nil
+			}
+			// Enter in textarea inserts newline (don't send)
+		}
+
+		// Pass through to textarea
+		oldText := m.chat.input.Value()
+		var cmd tea.Cmd
+		m.chat.input, cmd = m.chat.input.Update(msg)
+		newText := m.chat.input.Value()
+
+		if newText != oldText {
+			if m.chat.completion != nil && m.chat.completion.active {
+				if !strings.Contains(newText, "@") {
+					m.chat.cancelCompletion()
+				} else {
+					m.chat.refreshCompletion()
+				}
+			}
+		}
+		return m, cmd
+	}
+
 	return m, nil
 }
 
@@ -2298,7 +2401,7 @@ func (m Model) handleStatusUpdated(msg StatusUpdatedMsg) (Model, tea.Cmd) {
 	}
 
 	// Add received text to chat if viewing this session
-	if m.view == viewChat && m.chatSessionID == as.SessionID && msg.Attention != "" {
+	if (m.view == viewChat || (m.view == viewProjectList && m.streamOpen)) && m.chatSessionID == as.SessionID && msg.Attention != "" {
 		entry := chatEntry{
 			Timestamp: time.Now(),
 			Direction: "received",
@@ -2436,7 +2539,7 @@ func (m Model) handleScreenRead(msg ScreenReadMsg) (Model, tea.Cmd) {
 	}
 
 	// Add to chat if viewing this session
-	if m.view == viewChat && m.chatSessionID == msg.SessionID && status == model.StatusNeedsInput && as.Attention != "" {
+	if (m.view == viewChat || (m.view == viewProjectList && m.streamOpen)) && m.chatSessionID == msg.SessionID && status == model.StatusNeedsInput && as.Attention != "" {
 		m.chat.addEntry(chatEntry{
 			Timestamp: time.Now(),
 			Direction: "received",

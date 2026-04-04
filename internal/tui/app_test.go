@@ -3148,7 +3148,7 @@ func TestShortListKeepsSingleSpacerAbovePanel(t *testing.T) {
 	lines := strings.Split(m.View(), "\n")
 	panelTop := -1
 	for i, line := range lines {
-		if panelTop == -1 && strings.Contains(line, "┌") && strings.Contains(line, "v:close") {
+		if panelTop == -1 && strings.Contains(line, "┌") && strings.Contains(line, "Esc:close") {
 			panelTop = i
 		}
 	}

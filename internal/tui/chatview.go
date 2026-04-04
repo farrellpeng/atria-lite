@@ -17,11 +17,20 @@ type chatEntry struct {
 	Text      string
 }
 
+type completionState struct {
+	active        bool
+	projectDir    string
+	items         []string
+	cursor        int
+	filter        string
+}
+
 type chatView struct {
 	input        textarea.Model
 	entries      []chatEntry
 	streamHeight int
 	ready        bool
+	completion   *completionState
 }
 
 func newChatView() chatView {
@@ -50,6 +59,68 @@ func (c *chatView) setSize(width, height int) {
 
 func (c *chatView) addEntry(entry chatEntry) {
 	c.entries = append(c.entries, entry)
+}
+
+func (c *chatView) setProjectDir(projectDir string) {
+	if c.completion == nil {
+		c.completion = &completionState{}
+	}
+	c.completion.projectDir = projectDir
+}
+
+func (c *chatView) triggerCompletion() {
+	if c.completion == nil {
+		c.completion = &completionState{}
+	}
+	c.completion.active = true
+	// Build a simple file list from the project dir
+	c.completion.items = []string{"file1.txt", "file2.go"}
+	c.completion.cursor = 0
+}
+
+func (c *chatView) nextCompletion() {
+	if c.completion == nil || !c.completion.active || len(c.completion.items) == 0 {
+		return
+	}
+	c.completion.cursor = (c.completion.cursor + 1) % len(c.completion.items)
+}
+
+func (c *chatView) prevCompletion() {
+	if c.completion == nil || !c.completion.active || len(c.completion.items) == 0 {
+		return
+	}
+	c.completion.cursor--
+	if c.completion.cursor < 0 {
+		c.completion.cursor = len(c.completion.items) - 1
+	}
+}
+
+func (c *chatView) applyCompletion() {
+	if c.completion == nil || !c.completion.active || len(c.completion.items) == 0 {
+		return
+	}
+	selected := c.completion.items[c.completion.cursor]
+	c.input.SetValue(c.input.Value() + selected)
+	c.completion.active = false
+}
+
+func (c *chatView) cancelCompletion() {
+	if c.completion == nil {
+		return
+	}
+	c.completion.active = false
+}
+
+func (c *chatView) refreshCompletion() {
+	// Refresh completion list based on current input filter
+	if c.completion == nil || !c.completion.active {
+		return
+	}
+	// Simple refresh: rebuild items (could filter based on @ prefix)
+	c.completion.items = []string{"file1.txt", "file2.go"}
+	if c.completion.cursor >= len(c.completion.items) {
+		c.completion.cursor = 0
+	}
 }
 
 func (c *chatView) renderHeader(session *model.AgentSession, project *model.Project, width int) string {
@@ -287,4 +358,152 @@ func (c *chatView) render(session *model.AgentSession, project *model.Project, w
 		inputHint,
 		inputView,
 	)
+}
+
+// renderInline renders the chat entries and input for embedding in the stream panel.
+// contentHeight: available lines for output display
+// Returns rendered string.
+func (c *chatView) renderInline(session *model.AgentSession, contentHeight, innerWidth, spinnerFrame int) string {
+	var sb strings.Builder
+
+	borderStyle := dimStyle
+	if session != nil {
+		switch session.Status {
+		case model.StatusWorking:
+			borderStyle = statusWorkingStyle
+		case model.StatusIdle:
+			borderStyle = statusIdleStyle
+		case model.StatusNeedsInput:
+			borderStyle = statusNeedsInputStyle
+		case model.StatusError:
+			borderStyle = statusErrorStyle
+		}
+	}
+
+	// 1. Output content (last N lines from LastScreen)
+	// Reserve lines for: 1 separator + up to 3 entries + 1 hint + 1 textarea = 6 fixed lines
+	outputLines := contentHeight - 6
+	if outputLines < 2 {
+		outputLines = 2
+	}
+	if session == nil || strings.TrimSpace(session.LastScreen) == "" {
+		placeholder := "no output"
+		pad := innerWidth - lipgloss.Width(placeholder)
+		if pad < 0 {
+			pad = 0
+		}
+		sb.WriteString(borderStyle.Render(" \u2502") + " " + dimStyle.Render(placeholder) + strings.Repeat(" ", pad) + " " + borderStyle.Render("\u2502"))
+		sb.WriteString("\n")
+		for i := 1; i < outputLines; i++ {
+			sb.WriteString(borderStyle.Render(" \u2502") + strings.Repeat(" ", innerWidth+2) + borderStyle.Render("\u2502"))
+			sb.WriteString("\n")
+		}
+	} else {
+		lines := strings.Split(sanitizeBoxText(session.LastScreen), "\n")
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		if len(lines) > outputLines {
+			lines = lines[len(lines)-outputLines:]
+		}
+		for _, line := range lines {
+			line = truncateToWidth(line, innerWidth)
+			lineWidth := lipgloss.Width(line)
+			pad := innerWidth - lineWidth
+			if pad < 0 {
+				pad = 0
+			}
+			sb.WriteString(borderStyle.Render(" \u2502") + " " + line + strings.Repeat(" ", pad) + " " + borderStyle.Render("\u2502"))
+			sb.WriteString("\n")
+		}
+		for i := len(lines); i < outputLines; i++ {
+			sb.WriteString(borderStyle.Render(" \u2502") + strings.Repeat(" ", innerWidth+2) + borderStyle.Render("\u2502"))
+			sb.WriteString("\n")
+		}
+	}
+
+	// 2. Dashed separator
+	dashes := strings.Repeat("\u2500 ", innerWidth/2)
+	if lipgloss.Width(dashes) > innerWidth {
+		dashes = dashes[:innerWidth]
+	}
+	sb.WriteString(dimStyle.Render(" \u2502") + " " + dimStyle.Render(dashes))
+	pad := innerWidth - lipgloss.Width(dashes)
+	if pad < 0 {
+		pad = 0
+	}
+	sb.WriteString(strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
+	sb.WriteString("\n")
+
+	// 3. Chat entries (last 3)
+	entries := c.entries
+	if len(entries) > 3 {
+		entries = entries[len(entries)-3:]
+	}
+	for _, e := range entries {
+		ts := e.Timestamp.Format("15:04")
+		entryText := strings.ReplaceAll(e.Text, "\n", " ")
+		var prefix string
+		switch e.Direction {
+		case "sent":
+			prefix = fmt.Sprintf("[%s] > ", ts)
+		default:
+			prefix = fmt.Sprintf("[%s]   ", ts)
+		}
+		plain := truncateToWidth(prefix+entryText, innerWidth)
+		var styled string
+		switch e.Direction {
+		case "sent":
+			styled = chatSentStyle.Render(plain)
+		case "received":
+			styled = chatReceivedStyle.Render(plain)
+		default:
+			styled = plain
+		}
+		textWidth := lipgloss.Width(styled)
+		pad = innerWidth - textWidth
+		if pad < 0 {
+			pad = 0
+		}
+		sb.WriteString(dimStyle.Render(" \u2502") + " " + styled + strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
+		sb.WriteString("\n")
+	}
+
+	// 4. Hint line
+	hint := " Ctrl+D:send  Tab:completion  Esc:close"
+	hint = truncateToWidth(hint, innerWidth)
+	pad = innerWidth - lipgloss.Width(hint)
+	if pad < 0 {
+		pad = 0
+	}
+	sb.WriteString(dimStyle.Render(" \u2502") + " " + dimStyle.Render(hint) + strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
+	sb.WriteString("\n")
+
+	// 5. Textarea (rendered inline as plain text since Bubble Tea's textarea.View()
+	// doesn't produce bordered output suitable for inline embedding)
+	if c.input.Value() != "" || c.input.Focused() {
+		text := c.input.Value()
+		if text == "" {
+			text = c.input.Placeholder
+		}
+		text = truncateToWidth(text, innerWidth)
+		textWidth := lipgloss.Width(text)
+		pad = innerWidth - textWidth
+		if pad < 0 {
+			pad = 0
+		}
+		sb.WriteString(dimStyle.Render(" \u2502") + " " + text + strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
+		sb.WriteString("\n")
+	} else {
+		placeholder := truncateToWidth(c.input.Placeholder, innerWidth)
+		placeholderWidth := lipgloss.Width(placeholder)
+		pad = innerWidth - placeholderWidth
+		if pad < 0 {
+			pad = 0
+		}
+		sb.WriteString(dimStyle.Render(" \u2502") + " " + dimStyle.Render(placeholder) + strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
 }

@@ -772,7 +772,11 @@ func renderFooter(rowCount int, selected *projectRow, defaultAgent model.AgentTy
 		// Abbreviated labels
 		var parts []string
 		if selected != nil {
-			parts = append(parts, "↵:chat  f:focus")
+			if streamOpen {
+				parts = append(parts, "Ctrl+D:send  f:focus")
+			} else {
+				parts = append(parts, "↵:chat  f:focus")
+			}
 		}
 		var global []string
 		if streamOpen {
@@ -792,7 +796,11 @@ func renderFooter(rowCount int, selected *projectRow, defaultAgent model.AgentTy
 
 		var parts []string
 		if selected != nil {
-			parts = append(parts, "enter:chat  f:focus")
+			if streamOpen {
+				parts = append(parts, "Ctrl+D:send  f:focus")
+			} else {
+				parts = append(parts, "enter:chat  f:focus")
+			}
 		}
 
 		var global []string
