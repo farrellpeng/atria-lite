@@ -593,13 +593,19 @@ func (m Model) viewProjectList() string {
 	list := renderProjectList(m.rows, m.cursor, m.width, m.spinnerFrame, m.attentionSessions, m.defaultAgent, m.availableAgents, maxRows, scrollOffset, m.sortCol, m.sortDesc, canSetup, m.streamOpen, lp)
 	sb.WriteString(list)
 
+	var selected *projectRow
+	if m.cursor >= 0 && m.cursor < len(m.rows) {
+		selected = &m.rows[m.cursor]
+	}
+
+	// Render panel between rows and dir line.
 	if m.streamOpen {
 		var session *model.AgentSession
 		var projectName, projectDir string
-		if m.cursor >= 0 && m.cursor < len(m.rows) {
-			session = m.rows[m.cursor].session
-			projectName = m.rows[m.cursor].displayName
-			projectDir = contractHome(m.rows[m.cursor].project.Dir)
+		if selected != nil {
+			session = selected.session
+			projectName = selected.displayName
+			projectDir = contractHome(selected.project.Dir)
 		}
 		sb.WriteString(renderStreamPanelWithChat(
 			session, projectName, projectDir, m.width, layout.panelHeight,
@@ -608,10 +614,7 @@ func (m Model) viewProjectList() string {
 		))
 	}
 
-	var selected *projectRow
-	if m.cursor >= 0 && m.cursor < len(m.rows) {
-		selected = &m.rows[m.cursor]
-	}
+	// Dir line: shown when panel is closed; panel header already shows the path.
 	sb.WriteString("\n")
 	if !m.streamOpen && selected != nil {
 		dirLine := " " + contractHome(selected.project.Dir)
@@ -843,22 +846,24 @@ func (m Model) projectListLayout() projectListLayout {
 		return projectListLayout{maxRows: available / linesPerRow}
 	}
 
-	// When stream panel is open: rows are NOT compressed beyond available.
-	// Layout = header + rows + spacer + panel + dir line + footer + status.
-	// Rows don't shrink below what's available; panel gets remaining space.
+	// When stream panel is open: rows take what's available, panel gets the rest.
+	// Layout = header + rows + panel + footer + status.
+	// maxRows = min(rows that fit, actual row count) so panel expands when rows < max.
 	panelMinHeight := 10
 
 	// available = height - overhead = header + footer
-	// rowsSpace = available - panelMinHeight, capped to max that fits
 	rowsSpace := available - panelMinHeight
 	if rowsSpace < linesPerRow {
 		rowsSpace = linesPerRow
 	}
-	maxRows = rowsSpace / linesPerRow
-	if maxRows < 1 {
-		maxRows = 1
+	rowsCanFit := rowsSpace / linesPerRow
+	if rowsCanFit < 1 {
+		rowsCanFit = 1
 	}
-	// Cap rows to actual count (no padding beyond data)
+
+	// maxRows = min(rows that fit, actual rows). This ensures no padding lines
+	// when the list is short, letting the panel expand upward.
+	maxRows = rowsCanFit
 	if len(m.rows) > 0 && len(m.rows) < maxRows {
 		maxRows = len(m.rows)
 	}
