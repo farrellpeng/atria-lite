@@ -822,6 +822,7 @@ type projectListLayout struct {
 func (m Model) projectListLayout() projectListLayout {
 	lp := computeLayoutPolicy(m.width, m.narrowActive)
 	linesPerRow := lp.linesPerRow()
+	var maxRows int
 
 	overhead := lp.headerLines() + footerLineCount
 	if m.statusText != "" || m.upgradeVersion != "" {
@@ -842,50 +843,30 @@ func (m Model) projectListLayout() projectListLayout {
 		return projectListLayout{maxRows: available / linesPerRow}
 	}
 
-	usable := available - 1 // spacer line above top separator
-	if usable < 4 {
-		usable = 4
-	}
+	// When stream panel is open: rows are NOT compressed beyond available.
+	// Layout = header + rows + spacer + panel + dir line + footer + status.
+	// Rows don't shrink below what's available; panel gets remaining space.
+	panelMinHeight := 10
 
-	// Minimum panel height: at least 10 lines for stream panel (output + chat entries + textarea).
-	idealMinPanel := 10
-	// Clamp to what actually fits: at least one row must remain.
-	// On very short terminals this may be less than 3.
-	minPanel := idealMinPanel
-	if maxBudget := usable - linesPerRow; minPanel > maxBudget {
-		minPanel = maxBudget
+	// available = height - overhead = header + footer
+	// rowsSpace = available - panelMinHeight, capped to max that fits
+	rowsSpace := available - panelMinHeight
+	if rowsSpace < linesPerRow {
+		rowsSpace = linesPerRow
 	}
-	if minPanel < 1 {
-		minPanel = 1
+	maxRows = rowsSpace / linesPerRow
+	if maxRows < 1 {
+		maxRows = 1
 	}
-
-	minPanelHeight := (usable + 1) / 2
-	if minPanelHeight < minPanel {
-		minPanelHeight = minPanel
-	}
-
-	// maxRows is agent count; each agent takes linesPerRow lines.
-	maxRowLines := usable - minPanelHeight
-	if maxRowLines < linesPerRow {
-		maxRowLines = linesPerRow
-	}
-	maxRows := maxRowLines / linesPerRow
-
+	// Cap rows to actual count (no padding beyond data)
 	if len(m.rows) > 0 && len(m.rows) < maxRows {
 		maxRows = len(m.rows)
 	}
 
-	panelHeight := usable - maxRows*linesPerRow
-	if panelHeight < minPanelHeight {
-		panelHeight = minPanelHeight
-		maxRows = (usable - panelHeight) / linesPerRow
-		if maxRows < 1 {
-			maxRows = 1
-			panelHeight = usable - maxRows*linesPerRow
-			if panelHeight < 1 {
-				panelHeight = 1
-			}
-		}
+	// Panel fills remaining space (may be > panelMinHeight on short lists)
+	panelHeight := available - maxRows*linesPerRow
+	if panelHeight < panelMinHeight {
+		panelHeight = panelMinHeight
 	}
 
 	return projectListLayout{

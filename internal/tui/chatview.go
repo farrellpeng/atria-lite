@@ -481,29 +481,31 @@ func (c *chatView) renderInline(session *model.AgentSession, contentHeight, inne
 
 	// 5. Textarea (rendered inline as plain text since Bubble Tea's textarea.View()
 	// doesn't produce bordered output suitable for inline embedding)
-	if c.input.Value() != "" || c.input.Focused() {
-		text := c.input.Value()
-		if text == "" {
-			text = c.input.Placeholder
-		}
-		text = truncateToWidth(text, innerWidth)
-		textWidth := lipgloss.Width(text)
-		pad = innerWidth - textWidth
-		if pad < 0 {
-			pad = 0
-		}
-		sb.WriteString(dimStyle.Render(" \u2502") + " " + text + strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
-		sb.WriteString("\n")
-	} else {
-		placeholder := truncateToWidth(c.input.Placeholder, innerWidth)
-		placeholderWidth := lipgloss.Width(placeholder)
-		pad = innerWidth - placeholderWidth
-		if pad < 0 {
-			pad = 0
-		}
-		sb.WriteString(dimStyle.Render(" \u2502") + " " + dimStyle.Render(placeholder) + strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
-		sb.WriteString("\n")
+	var inputLine string
+	if c.input.Value() != "" {
+		inputLine = c.input.Value()
 	}
+	inputLine = truncateToWidth(inputLine, innerWidth)
+	inputWidth := lipgloss.Width(inputLine)
+	pad = innerWidth - inputWidth
+	if pad < 0 {
+		pad = 0
+	}
+	if c.input.Value() == "" && c.input.Focused() {
+		// Show blinking cursor when focused and empty
+		cursorWidth := lipgloss.Width(selectedTextStyle.Render("█"))
+		remainPad := innerWidth - cursorWidth
+		if remainPad < 0 {
+			remainPad = 0
+		}
+		sb.WriteString(dimStyle.Render(" \u2502") + " " + selectedTextStyle.Render("█") + strings.Repeat(" ", remainPad) + " " + dimStyle.Render("\u2502"))
+	} else if c.input.Value() == "" {
+		// Empty and not focused: show blank line
+		sb.WriteString(dimStyle.Render(" \u2502") + strings.Repeat(" ", innerWidth) + " " + dimStyle.Render("\u2502"))
+	} else {
+		sb.WriteString(dimStyle.Render(" \u2502") + " " + inputLine + strings.Repeat(" ", pad) + " " + dimStyle.Render("\u2502"))
+	}
+	sb.WriteString("\n")
 
 	return sb.String()
 }

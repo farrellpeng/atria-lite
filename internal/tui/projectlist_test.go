@@ -508,24 +508,31 @@ func TestProjectListLayoutNarrowStreamShortTerminal(t *testing.T) {
 			linesPerRow := lp.linesPerRow()
 
 			// overhead = headerLines(2) + footerLineCount(3) = 5
-			// available = height - 5; usable = available - 1 (spacer)
+			// available = height - 5
+			// rowsSpace = available - panelMinHeight(10), maxRows = rowsSpace / linesPerRow
+			// panelHeight = available - maxRows * linesPerRow (clamped to 10)
 			overhead := lp.headerLines() + footerLineCount
 			available := m.height - overhead
-			usable := available - 1
-			if usable < 4 {
-				usable = 4
+			panelMinHeight := 10
+
+			rowsSpace := available - panelMinHeight
+			if rowsSpace < linesPerRow {
+				rowsSpace = linesPerRow
+			}
+			wantMaxRows := rowsSpace / linesPerRow
+			if wantMaxRows < 1 {
+				wantMaxRows = 1
+			}
+			wantPanelHeight := available - wantMaxRows*linesPerRow
+			if wantPanelHeight < panelMinHeight {
+				wantPanelHeight = panelMinHeight
 			}
 
-			consumed := layout.maxRows*linesPerRow + layout.panelHeight
-			if consumed > usable {
-				t.Errorf("layout exceeds usable space: maxRows=%d * linesPerRow=%d + panelHeight=%d = %d > usable=%d",
-					layout.maxRows, linesPerRow, layout.panelHeight, consumed, usable)
+			if layout.maxRows != wantMaxRows {
+				t.Errorf("maxRows = %d, want %d", layout.maxRows, wantMaxRows)
 			}
-			if layout.maxRows < 1 {
-				t.Errorf("maxRows must be at least 1, got %d", layout.maxRows)
-			}
-			if layout.panelHeight < 1 {
-				t.Errorf("panelHeight must be at least 1, got %d", layout.panelHeight)
+			if layout.panelHeight != wantPanelHeight {
+				t.Errorf("panelHeight = %d, want %d", layout.panelHeight, wantPanelHeight)
 			}
 		})
 	}

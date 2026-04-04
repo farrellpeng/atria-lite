@@ -2739,14 +2739,15 @@ func TestMaxVisibleRowsShrinksWithStream(t *testing.T) {
 	layout := m.projectListLayout()
 	with := m.maxVisibleRows()
 
+	// With panel, rows shrink (take available - panelMin, not all available)
 	if with >= without {
 		t.Errorf("maxVisibleRows with stream (%d) should be less than without (%d)", with, without)
 	}
 	if with != layout.maxRows {
 		t.Errorf("maxVisibleRows() = %d, want layout maxRows %d", with, layout.maxRows)
 	}
-	if without-with != layout.panelHeight {
-		t.Errorf("difference should be panelHeight (%d), got %d", layout.panelHeight, without-with)
+	if layout.panelHeight != 10 {
+		t.Errorf("panelHeight = %d, want 10", layout.panelHeight)
 	}
 }
 
@@ -2767,14 +2768,13 @@ func TestProjectListLayoutUsesMinimumPanelForLongLists(t *testing.T) {
 	m.streamOpen = true
 
 	layout := m.projectListLayout()
-	usable := m.height - headerLineCount - footerLineCount - 1
-	wantPanel := (usable + 1) / 2
-
-	if layout.panelHeight != wantPanel {
-		t.Fatalf("panelHeight = %d, want %d", layout.panelHeight, wantPanel)
+	// Panel stays at minimum 10; rows take remaining space.
+	if layout.panelHeight != 10 {
+		t.Fatalf("panelHeight = %d, want 10", layout.panelHeight)
 	}
-	if layout.maxRows != usable-wantPanel {
-		t.Fatalf("maxRows = %d, want %d", layout.maxRows, usable-wantPanel)
+	// available = 40 - 3 - 3 = 34, rowsSpace = 34 - 10 = 24, maxRows = 24
+	if layout.maxRows != 24 {
+		t.Fatalf("maxRows = %d, want 24", layout.maxRows)
 	}
 }
 
@@ -2795,16 +2795,13 @@ func TestProjectListLayoutExpandsPanelForShortLists(t *testing.T) {
 	m.streamOpen = true
 
 	layout := m.projectListLayout()
-	usable := m.height - headerLineCount - footerLineCount - 1
-
-	if layout.maxRows != len(m.rows) {
-		t.Fatalf("maxRows = %d, want %d", layout.maxRows, len(m.rows))
+	// Panel expands to fill space when list is short.
+	// available = 34, maxRows capped at 3 (len(rows)), panel = 34 - 3 = 31
+	if layout.panelHeight != 31 {
+		t.Fatalf("panelHeight = %d, want 31", layout.panelHeight)
 	}
-	if layout.panelHeight != usable-len(m.rows) {
-		t.Fatalf("panelHeight = %d, want %d", layout.panelHeight, usable-len(m.rows))
-	}
-	if layout.panelHeight < (usable+1)/2 {
-		t.Fatalf("panelHeight = %d, want >= %d", layout.panelHeight, (usable+1)/2)
+	if layout.maxRows != 3 {
+		t.Fatalf("maxRows = %d, want 3", layout.maxRows)
 	}
 }
 
@@ -2827,8 +2824,8 @@ func TestProjectListLayoutHandlesShortTerminal(t *testing.T) {
 	if layout.maxRows < 1 {
 		t.Fatalf("maxRows = %d, want >= 1", layout.maxRows)
 	}
-	if layout.panelHeight < 3 {
-		t.Fatalf("panelHeight = %d, want >= 3", layout.panelHeight)
+	if layout.panelHeight < 10 {
+		t.Fatalf("panelHeight = %d, want >= 10", layout.panelHeight)
 	}
 
 	view := m.View()
@@ -2859,8 +2856,8 @@ func TestStreamPanelShowsSelectedScreen(t *testing.T) {
 	if !strings.Contains(v, "Claude") {
 		t.Error("expected stream panel header to contain agent type")
 	}
-	if !strings.Contains(v, "v:close") {
-		t.Error("expected stream panel header to contain v:close hint")
+	if !strings.Contains(v, "Esc:close") {
+		t.Error("expected stream panel header to contain Esc:close hint")
 	}
 }
 
