@@ -33,23 +33,23 @@ type CandidatePane struct {
 }
 
 type SlotBinding struct {
-	Slot   SlotID
-	PaneID int
-	Kind   OccupantKind
+	Slot   SlotID       `json:"slot"`
+	PaneID int          `json:"pane_id"`
+	Kind   OccupantKind `json:"kind"`
 }
 
 type MonitorContext struct {
-	SelfPaneID       int
-	StarterPaneID    int
-	WindowID         int
-	TabID            int
-	SlotBindings     []SlotBinding
-	WorkspacePaneIDs []int
+	SelfPaneID       int           `json:"self_pane_id"`
+	StarterPaneID    int           `json:"starter_pane_id"`
+	WindowID         int           `json:"window_id"`
+	TabID            int           `json:"tab_id"`
+	SlotBindings     []SlotBinding `json:"slot_bindings"`
+	WorkspacePaneIDs []int         `json:"workspace_pane_ids"`
 }
 
 func (ctx MonitorContext) Validate() error {
 	switch {
-	case ctx.SelfPaneID == 0 && ctx.StarterPaneID == 0 && ctx.WindowID == 0 && ctx.TabID == 0:
+	case ctx.SelfPaneID == 0:
 		return fmt.Errorf("self pane id is required")
 	case ctx.StarterPaneID == 0:
 		return fmt.Errorf("starter pane id is required")

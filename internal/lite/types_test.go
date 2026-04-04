@@ -46,6 +46,10 @@ func TestMonitorContextValidate(t *testing.T) {
 			ctx  MonitorContext
 		}{
 			{
+				name: "self pane id",
+				ctx:  MonitorContext{StarterPaneID: 2, WindowID: 3, TabID: 4},
+			},
+			{
 				name: "starter pane id",
 				ctx:  MonitorContext{SelfPaneID: 1, WindowID: 3, TabID: 4},
 			},
