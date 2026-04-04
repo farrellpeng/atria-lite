@@ -356,6 +356,47 @@ func TestNormalizeAndShrinkKeepCompactOrder(t *testing.T) {
 	}
 }
 
+func TestNormalizeBindingsDeduplicatesPaneIDs(t *testing.T) {
+	tests := []struct {
+		name     string
+		bindings []SlotBinding
+		want     []SlotBinding
+	}{
+		{
+			name: "agent wins over normal for same pane id",
+			bindings: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantNormal},
+				{Slot: Slot2, PaneID: 10, Kind: OccupantAgent},
+				{Slot: Slot3, PaneID: 20, Kind: OccupantNormal},
+			},
+			want: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+				{Slot: Slot2, PaneID: 20, Kind: OccupantNormal},
+			},
+		},
+		{
+			name: "leftmost agent wins for duplicate agent pane ids",
+			bindings: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+				{Slot: Slot2, PaneID: 10, Kind: OccupantAgent},
+				{Slot: Slot3, PaneID: 20, Kind: OccupantNormal},
+			},
+			want: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+				{Slot: Slot2, PaneID: 20, Kind: OccupantNormal},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeBindings(tt.bindings); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("normalizeBindings mismatch\nwant: %#v\ngot:  %#v", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestShrinkLayoutDropsEmptyTrailingSlot(t *testing.T) {
 	tests := []struct {
 		name     string

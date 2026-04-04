@@ -118,32 +118,44 @@ func ShrinkBindings(bindings []SlotBinding, livePaneIDs map[int]bool) []SlotBind
 
 func normalizeBindings(bindings []SlotBinding) []SlotBinding {
 	agents := make([]SlotBinding, 0, len(bindings))
+	slotsWithAgents := make(map[SlotID]bool, len(slotOrder))
+	seenPaneIDs := make(map[int]bool, len(bindings))
 	var normal *SlotBinding
 
 	for _, slot := range slotOrder {
-		var slotNormal *SlotBinding
 		for _, binding := range bindings {
-			if binding.Slot != slot {
+			if binding.Slot != slot || binding.Kind != OccupantAgent {
 				continue
 			}
-			switch binding.Kind {
-			case OccupantAgent:
-				if len(agents) < len(slotOrder) {
-					agents = append(agents, SlotBinding{PaneID: binding.PaneID, Kind: OccupantAgent})
+			slotsWithAgents[slot] = true
+			if seenPaneIDs[binding.PaneID] {
+				break
+			}
+			if len(agents) < len(slotOrder) {
+				agents = append(agents, SlotBinding{PaneID: binding.PaneID, Kind: OccupantAgent})
+				seenPaneIDs[binding.PaneID] = true
+			}
+			break
+		}
+	}
+
+	if len(agents) < len(slotOrder) {
+		for _, slot := range slotOrder {
+			if slotsWithAgents[slot] {
+				continue
+			}
+			for _, binding := range bindings {
+				if binding.Slot != slot || binding.Kind != OccupantNormal || seenPaneIDs[binding.PaneID] {
+					continue
 				}
-				slotNormal = nil
-				goto nextSlot
-			case OccupantNormal:
-				if slotNormal == nil {
-					nb := SlotBinding{PaneID: binding.PaneID, Kind: OccupantNormal}
-					slotNormal = &nb
-				}
+				nb := SlotBinding{PaneID: binding.PaneID, Kind: OccupantNormal}
+				normal = &nb
+				break
+			}
+			if normal != nil {
+				break
 			}
 		}
-		if normal == nil && slotNormal != nil {
-			normal = slotNormal
-		}
-	nextSlot:
 	}
 
 	next := make([]SlotBinding, 0, len(slotOrder))
