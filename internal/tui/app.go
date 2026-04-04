@@ -848,8 +848,8 @@ func (m Model) projectListLayout() projectListLayout {
 
 	// When stream panel is open: rows take what's available, panel gets the rest.
 	// Layout = header + rows + panel + footer + status.
-	// maxRows = min(actual rows, rows that fit) so renderProjectList adds no padding
-	// when the list is short, letting the panel expand upward.
+	// maxRows = min(actual rows, rows that fit) so no padding lines are added.
+	// Panel expands to fill all remaining space below rows.
 	panelMinHeight := 10
 	
 	// available = height - overhead = header + footer
@@ -862,15 +862,16 @@ func (m Model) projectListLayout() projectListLayout {
 		rowsCanFit = 1
 	}
 	
-	// maxRows = min(actual rows, rows that fit). No padding lines added.
+	// maxRows = min(actual rows, rows that fit)
 	maxRows = rowsCanFit
 	if len(m.rows) > 0 && len(m.rows) < maxRows {
 		maxRows = len(m.rows)
 	}
 	
-	// Panel fills remaining space (may be > panelMinHeight on short lists)
+	// Panel fills all remaining space: available - rows
 	panelHeight := available - maxRows*linesPerRow
-	if panelHeight < panelMinHeight {
+	// Only enforce minimum when rows fill the space (scrolling list)
+	if panelHeight < panelMinHeight && len(m.rows) >= rowsCanFit {
 		panelHeight = panelMinHeight
 	}
 
