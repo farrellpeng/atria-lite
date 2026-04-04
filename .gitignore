@@ -1,4 +1,5 @@
 atria
+.worktrees/
 *.exe
 *.dll
 *.so
