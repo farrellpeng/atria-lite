@@ -162,6 +162,69 @@ func TestCurrentPaneIDFromEnvInvalid(t *testing.T) {
 	}
 }
 
+func TestListPanesStructuresFields(t *testing.T) {
+	scriptPath, _ := writeWeztermStub(t, `[
+		{"window_id": 7, "tab_id": 1, "pane_id": 11, "workspace": "default", "title": "claude", "cwd": "file:///tmp/a", "tty_name": "/dev/pts/1"},
+		{"window_id": 7, "tab_id": 2, "pane_id": 22, "workspace": "work", "title": "codex", "cwd": "/tmp/b", "tty_name": "/dev/pts/2"}
+	]`)
+	t.Setenv("WEZTERM_PANE", "22")
+
+	c := NewClient(scriptPath)
+	panes, err := c.ListPanes()
+	if err != nil {
+		t.Fatalf("ListPanes() error: %v", err)
+	}
+	if len(panes) != 2 {
+		t.Fatalf("ListPanes() len = %d, want 2", len(panes))
+	}
+
+	first := panes[0]
+	if first.WindowID != 7 {
+		t.Fatalf("first.WindowID = %d, want 7", first.WindowID)
+	}
+	if first.TabID != 1 {
+		t.Fatalf("first.TabID = %d, want 1", first.TabID)
+	}
+	if first.Workspace != "default" {
+		t.Fatalf("first.Workspace = %q, want %q", first.Workspace, "default")
+	}
+	if first.Title != "claude" {
+		t.Fatalf("first.Title = %q, want %q", first.Title, "claude")
+	}
+	if first.TTYName != "/dev/pts/1" {
+		t.Fatalf("first.TTYName = %q, want %q", first.TTYName, "/dev/pts/1")
+	}
+	if first.CWD != "/tmp/a" {
+		t.Fatalf("first.CWD = %q, want %q", first.CWD, "/tmp/a")
+	}
+	if first.IsActive {
+		t.Fatal("expected first pane to be inactive")
+	}
+
+	second := panes[1]
+	if second.WindowID != 7 {
+		t.Fatalf("second.WindowID = %d, want 7", second.WindowID)
+	}
+	if second.TabID != 2 {
+		t.Fatalf("second.TabID = %d, want 2", second.TabID)
+	}
+	if second.Workspace != "work" {
+		t.Fatalf("second.Workspace = %q, want %q", second.Workspace, "work")
+	}
+	if second.Title != "codex" {
+		t.Fatalf("second.Title = %q, want %q", second.Title, "codex")
+	}
+	if second.TTYName != "/dev/pts/2" {
+		t.Fatalf("second.TTYName = %q, want %q", second.TTYName, "/dev/pts/2")
+	}
+	if second.CWD != "/tmp/b" {
+		t.Fatalf("second.CWD = %q, want %q", second.CWD, "/tmp/b")
+	}
+	if !second.IsActive {
+		t.Fatal("expected second pane to be active")
+	}
+}
+
 func TestListWindowPanesFiltersByWindow(t *testing.T) {
 	scriptPath, _ := writeWeztermStub(t, `[
 		{"window_id": 7, "tab_id": 1, "pane_id": 11, "workspace": "default", "title": "claude", "cwd": "file:///tmp/a", "tty_name": "/dev/pts/1"},
