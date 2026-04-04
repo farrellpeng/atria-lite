@@ -32,10 +32,9 @@ type Model struct {
 	cursor      int
 	replacePane CandidatePane
 
-	replaceTarget SlotID
-	statusText    string
-	width         int
-	height        int
+	statusText string
+	width      int
+	height     int
 }
 
 func NewModel(client windowPaneClient, ctx MonitorContext) Model {
@@ -62,11 +61,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 	case windowPanesLoadedMsg:
 		m.panes = classifyWindowPanes(msg.panes, m.ctx)
-		m.shrinkBindings()
+		m.reconcileBindings()
+		m.syncReplacePrompt()
 		m.clampCursor()
-		if m.statusText == "" {
-			m.statusText = fmt.Sprintf("%d agent pane(s) visible", len(m.agentPanes()))
-		}
+		m.statusText = m.modeStatusText()
 	case windowPanesLoadFailedMsg:
 		m.statusText = fmt.Sprintf("Refresh failed: %v", msg.err)
 	case tea.KeyMsg:
@@ -84,7 +82,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "q":
 			m.mode = ModeList
-			m.statusText = ""
+			m.replacePane = CandidatePane{}
+			m.statusText = m.modeStatusText()
 		case "r":
 			return m, refreshWindowPanes(m.client, m.ctx.WindowID)
 		}
@@ -113,8 +112,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if prompt {
 			m.mode = ModeReplacePrompt
 			m.replacePane = selected
-			m.replaceTarget = firstReplaceTarget(m.bindings)
-			m.statusText = fmt.Sprintf("Replace a slot to load %s", paneLabel(selected))
+			m.statusText = m.modeStatusText()
 			return m, nil
 		}
 		m.bindings = nextBindings
@@ -123,7 +121,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusText = fmt.Sprintf("Loaded %s", paneLabel(selected))
 	case "n":
 		m.mode = ModeNormalPanePicker
-		m.statusText = fmt.Sprintf("%d normal pane(s) available", len(m.normalPanes()))
+		m.statusText = m.modeStatusText()
 	case "r":
 		return m, refreshWindowPanes(m.client, m.ctx.WindowID)
 	}
@@ -156,14 +154,30 @@ func classifyWindowPanes(panes []wezterm.PaneInfo, ctx MonitorContext) []Candida
 	return candidates
 }
 
-func (m *Model) shrinkBindings() {
-	live := make(map[int]bool, len(m.panes))
+func (m *Model) reconcileBindings() {
+	liveKinds := make(map[int]OccupantKind, len(m.panes))
+	livePaneByID := make(map[int]CandidatePane, len(m.panes))
+	livePaneIDs := make(map[int]bool, len(m.panes))
 	for _, pane := range m.panes {
-		live[pane.PaneID] = true
+		liveKinds[pane.PaneID] = pane.Kind
+		livePaneByID[pane.PaneID] = pane
+		livePaneIDs[pane.PaneID] = true
 	}
-	m.bindings = ShrinkBindings(m.bindings, live)
+
+	current := normalizeBindings(m.bindings)
+	for i := range current {
+		if kind, ok := liveKinds[current[i].PaneID]; ok {
+			current[i].Kind = kind
+		}
+	}
+
+	m.bindings = ShrinkBindings(current, livePaneIDs)
 	m.ctx.SlotBindings = m.bindings
 	m.ctx.WorkspacePaneIDs = bindingPaneIDs(m.bindings)
+
+	if candidate, ok := livePaneByID[m.replacePane.PaneID]; ok {
+		m.replacePane = candidate
+	}
 }
 
 func (m *Model) clampCursor() {
@@ -195,17 +209,40 @@ func filterPanesByKind(panes []CandidatePane, kind OccupantKind) []CandidatePane
 	return out
 }
 
-func firstReplaceTarget(bindings []SlotBinding) SlotID {
-	if len(bindings) == 0 {
-		return Slot1
-	}
-	return normalizeBindings(bindings)[0].Slot
-}
-
 func paneLabel(pane CandidatePane) string {
 	label := strings.TrimSpace(pane.Title)
 	if label == "" {
 		label = fmt.Sprintf("pane %d", pane.PaneID)
 	}
 	return label
+}
+
+func (m *Model) syncReplacePrompt() {
+	if m.mode != ModeReplacePrompt {
+		return
+	}
+	if m.replacePane.PaneID == 0 {
+		m.mode = ModeList
+		return
+	}
+	for _, pane := range m.panes {
+		if pane.PaneID == m.replacePane.PaneID {
+			m.replacePane = pane
+			return
+		}
+	}
+	m.mode = ModeList
+	m.replacePane = CandidatePane{}
+}
+
+func (m Model) modeStatusText() string {
+	switch m.mode {
+	case ModeReplacePrompt:
+		if m.replacePane.PaneID != 0 {
+			return fmt.Sprintf("Replace required for %s", paneLabel(m.replacePane))
+		}
+	case ModeNormalPanePicker:
+		return fmt.Sprintf("%d normal pane(s) available", len(m.normalPanes()))
+	}
+	return fmt.Sprintf("%d agent pane(s) visible", len(m.agentPanes()))
 }

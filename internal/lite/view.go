@@ -55,9 +55,6 @@ func (m Model) viewReplacePrompt() []string {
 		"Replace Prompt",
 		fmt.Sprintf("  All 3 slots are full. %s would require a replacement.", paneLabel(m.replacePane)),
 	}
-	if m.replaceTarget != "" {
-		lines = append(lines, fmt.Sprintf("  Default target: %s", m.replaceTarget))
-	}
 	lines = append(lines, "  Press esc to go back.")
 	return lines
 }
@@ -89,7 +86,11 @@ func (m Model) viewSlotSummary() []string {
 }
 
 func (m Model) viewFooter() string {
-	help := "enter load agent | n normal panes | r refresh | esc back"
+	help := "enter load agent | n normal panes | r refresh"
+	switch m.mode {
+	case ModeReplacePrompt, ModeNormalPanePicker:
+		help = "r refresh | esc back"
+	}
 	if m.statusText == "" {
 		return help
 	}
