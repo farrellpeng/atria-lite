@@ -76,6 +76,31 @@ func TestPlanInitialLayout(t *testing.T) {
 			},
 			wantOverflow: []int{10, 14},
 		},
+		{
+			name: "multiple normals keep only first normal",
+			panes: []CandidatePane{
+				{PaneID: 40, Kind: OccupantNormal},
+				{PaneID: 10, Kind: OccupantNormal},
+				{PaneID: 30, Kind: OccupantNormal},
+			},
+			want: []SlotBinding{
+				{Slot: Slot1, PaneID: 40, Kind: OccupantNormal},
+			},
+			wantOverflow: []int{10, 30},
+		},
+		{
+			name: "preserves caller left-to-right order instead of pane ids",
+			panes: []CandidatePane{
+				{PaneID: 30, Kind: OccupantAgent, AgentType: model.AgentClaude},
+				{PaneID: 10, Kind: OccupantAgent, AgentType: model.AgentCodex},
+				{PaneID: 20, Kind: OccupantNormal},
+			},
+			want: []SlotBinding{
+				{Slot: Slot1, PaneID: 30, Kind: OccupantAgent},
+				{Slot: Slot2, PaneID: 10, Kind: OccupantAgent},
+				{Slot: Slot3, PaneID: 20, Kind: OccupantNormal},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +178,65 @@ func TestPlanAgentLoadShiftsNormalPaneRight(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, prompt := PlanAgentLoad(tt.bindings, tt.pane)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", tt.want, got)
+			}
+			if prompt != tt.wantPrompt {
+				t.Fatalf("replacePrompt mismatch\nwant: %v\ngot:  %v", tt.wantPrompt, prompt)
+			}
+		})
+	}
+}
+
+func TestPlanLoadReplacesSamePaneAcrossKinds(t *testing.T) {
+	tests := []struct {
+		name       string
+		load       func([]SlotBinding, CandidatePane) ([]SlotBinding, bool)
+		bindings   []SlotBinding
+		pane       CandidatePane
+		want       []SlotBinding
+		wantPrompt bool
+	}{
+		{
+			name: "slot1 normal becomes agent",
+			load: PlanAgentLoad,
+			bindings: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantNormal},
+			},
+			pane: CandidatePane{PaneID: 10, Kind: OccupantAgent, AgentType: model.AgentClaude},
+			want: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+			},
+		},
+		{
+			name: "slot1 agent becomes normal",
+			load: PlanNormalLoad,
+			bindings: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+			},
+			pane: CandidatePane{PaneID: 10, Kind: OccupantNormal},
+			want: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantNormal},
+			},
+		},
+		{
+			name: "slot1 agent changes to normal while another agent remains",
+			load: PlanNormalLoad,
+			bindings: []SlotBinding{
+				{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+				{Slot: Slot2, PaneID: 11, Kind: OccupantAgent},
+			},
+			pane: CandidatePane{PaneID: 10, Kind: OccupantNormal},
+			want: []SlotBinding{
+				{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+				{Slot: Slot2, PaneID: 10, Kind: OccupantNormal},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, prompt := tt.load(tt.bindings, tt.pane)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", tt.want, got)
 			}
@@ -242,6 +326,33 @@ func TestPlanNormalLoadUsesRightmostActiveSlot(t *testing.T) {
 				t.Fatalf("replacePrompt mismatch\nwant: %v\ngot:  %v", tt.wantPrompt, prompt)
 			}
 		})
+	}
+}
+
+func TestNormalizeAndShrinkKeepCompactOrder(t *testing.T) {
+	bindings := []SlotBinding{
+		{Slot: Slot3, PaneID: 30, Kind: OccupantNormal},
+		{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 20, Kind: OccupantNormal},
+		{Slot: Slot2, PaneID: 11, Kind: OccupantAgent},
+	}
+
+	wantNormalized := []SlotBinding{
+		{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot3, PaneID: 30, Kind: OccupantNormal},
+	}
+	if got := normalizeBindings(bindings); !reflect.DeepEqual(got, wantNormalized) {
+		t.Fatalf("normalizeBindings mismatch\nwant: %#v\ngot:  %#v", wantNormalized, got)
+	}
+
+	wantShrunk := []SlotBinding{
+		{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 11, Kind: OccupantAgent},
+	}
+	live := map[int]bool{10: true, 11: true}
+	if got := ShrinkBindings(bindings, live); !reflect.DeepEqual(got, wantShrunk) {
+		t.Fatalf("ShrinkBindings mismatch\nwant: %#v\ngot:  %#v", wantShrunk, got)
 	}
 }
 

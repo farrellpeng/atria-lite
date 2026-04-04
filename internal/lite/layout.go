@@ -2,6 +2,8 @@ package lite
 
 var slotOrder = []SlotID{Slot1, Slot2, Slot3}
 
+// PlanInitialLayout expects panes in current-window left-to-right order and
+// preserves that encounter order when choosing which agent panes occupy slots.
 func PlanInitialLayout(panes []CandidatePane) (bindings []SlotBinding, overflow []int) {
 	if len(panes) == 0 {
 		return nil, nil
@@ -55,8 +57,11 @@ func PlanInitialLayout(panes []CandidatePane) (bindings []SlotBinding, overflow 
 
 func PlanAgentLoad(bindings []SlotBinding, pane CandidatePane) ([]SlotBinding, bool) {
 	current := normalizeBindings(bindings)
-	if hasPane(current, pane.PaneID) {
-		return current, false
+	if idx, found := findPaneIndex(current, pane.PaneID); found {
+		if current[idx].Kind == OccupantAgent {
+			return current, false
+		}
+		current = append(append([]SlotBinding(nil), current[:idx]...), current[idx+1:]...)
 	}
 	if len(current) == len(slotOrder) {
 		return current, true
@@ -76,8 +81,11 @@ func PlanAgentLoad(bindings []SlotBinding, pane CandidatePane) ([]SlotBinding, b
 
 func PlanNormalLoad(bindings []SlotBinding, pane CandidatePane) ([]SlotBinding, bool) {
 	current := normalizeBindings(bindings)
-	if hasPane(current, pane.PaneID) {
-		return current, false
+	if idx, found := findPaneIndex(current, pane.PaneID); found {
+		if current[idx].Kind == OccupantNormal {
+			return current, false
+		}
+		current = append(append([]SlotBinding(nil), current[:idx]...), current[idx+1:]...)
 	}
 	if len(current) == len(slotOrder) {
 		return current, true
@@ -113,6 +121,7 @@ func normalizeBindings(bindings []SlotBinding) []SlotBinding {
 	var normal *SlotBinding
 
 	for _, slot := range slotOrder {
+		var slotNormal *SlotBinding
 		for _, binding := range bindings {
 			if binding.Slot != slot {
 				continue
@@ -122,14 +131,19 @@ func normalizeBindings(bindings []SlotBinding) []SlotBinding {
 				if len(agents) < len(slotOrder) {
 					agents = append(agents, SlotBinding{PaneID: binding.PaneID, Kind: OccupantAgent})
 				}
+				slotNormal = nil
+				goto nextSlot
 			case OccupantNormal:
-				if normal == nil {
+				if slotNormal == nil {
 					nb := SlotBinding{PaneID: binding.PaneID, Kind: OccupantNormal}
-					normal = &nb
+					slotNormal = &nb
 				}
 			}
-			break
 		}
+		if normal == nil && slotNormal != nil {
+			normal = slotNormal
+		}
+	nextSlot:
 	}
 
 	next := make([]SlotBinding, 0, len(slotOrder))
@@ -155,11 +169,11 @@ func reindex(bindings []SlotBinding) []SlotBinding {
 	return next
 }
 
-func hasPane(bindings []SlotBinding, paneID int) bool {
-	for _, binding := range bindings {
+func findPaneIndex(bindings []SlotBinding, paneID int) (int, bool) {
+	for i, binding := range bindings {
 		if binding.PaneID == paneID {
-			return true
+			return i, true
 		}
 	}
-	return false
+	return 0, false
 }
