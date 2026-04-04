@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/sethdeckard/atria/internal/lite"
 )
@@ -26,6 +29,10 @@ func run(args []string) int {
 		printUsage(os.Stderr)
 		return 2
 	}
+	if isHelpArg(args[0]) && len(args) == 1 {
+		printUsage(os.Stdout)
+		return 0
+	}
 
 	switch args[0] {
 	case "start":
@@ -45,6 +52,10 @@ func run(args []string) int {
 }
 
 func runStart(args []string) error {
+	if len(args) == 1 && isHelpArg(args[0]) {
+		printUsage(os.Stdout)
+		return nil
+	}
 	if len(args) > 0 {
 		return usageError{msg: "start does not accept arguments"}
 	}
@@ -52,14 +63,24 @@ func runStart(args []string) error {
 }
 
 func runMonitor(args []string) error {
+	if len(args) == 1 && isHelpArg(args[0]) {
+		printUsage(os.Stdout)
+		return nil
+	}
+
 	fs := flag.NewFlagSet("monitor", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	var flagOutput bytes.Buffer
+	fs.SetOutput(&flagOutput)
 
 	var encodedContext string
 	fs.StringVar(&encodedContext, "context-base64", "", "")
 
 	if err := fs.Parse(args); err != nil {
-		return usageError{msg: "invalid monitor arguments"}
+		msg := strings.TrimSpace(flagOutput.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return usageError{msg: msg}
 	}
 	if fs.NArg() > 0 {
 		return usageError{msg: "monitor does not accept positional arguments"}
@@ -67,14 +88,19 @@ func runMonitor(args []string) error {
 	if encodedContext == "" {
 		return usageError{msg: "--context-base64 is required"}
 	}
-	if _, err := lite.DecodeMonitorContext(encodedContext); err != nil {
+	ctx, err := lite.DecodeMonitorContext(encodedContext)
+	if err != nil {
+		return usageError{msg: err.Error()}
+	}
+	if err := ctx.Validate(); err != nil {
 		return usageError{msg: err.Error()}
 	}
 	return nil
 }
 
 func reportError(err error) int {
-	if _, ok := err.(usageError); ok {
+	var usageErr usageError
+	if errors.As(err, &usageErr) {
 		fmt.Fprintf(os.Stderr, "error: %v\n\n%s", err, usageText())
 		return 2
 	}
@@ -95,4 +121,8 @@ Commands:
   start    Placeholder entry point for the lite launcher
   monitor  Decode a MonitorContext passed via CLI
 `
+}
+
+func isHelpArg(arg string) bool {
+	return arg == "-h" || arg == "--help"
 }
