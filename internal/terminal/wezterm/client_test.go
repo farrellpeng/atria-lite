@@ -197,6 +197,9 @@ func TestListPanesStructuresFields(t *testing.T) {
 	if first.CWD != "/tmp/a" {
 		t.Fatalf("first.CWD = %q, want %q", first.CWD, "/tmp/a")
 	}
+	if first.IsSelf {
+		t.Fatal("expected first pane to be self=false")
+	}
 	if first.IsActive {
 		t.Fatal("expected first pane to be inactive")
 	}
@@ -220,8 +223,80 @@ func TestListPanesStructuresFields(t *testing.T) {
 	if second.CWD != "/tmp/b" {
 		t.Fatalf("second.CWD = %q, want %q", second.CWD, "/tmp/b")
 	}
+	if !second.IsSelf {
+		t.Fatal("expected second pane to be self")
+	}
 	if !second.IsActive {
 		t.Fatal("expected second pane to be active")
+	}
+}
+
+func TestListPanesWithoutCurrentPaneEnv(t *testing.T) {
+	scriptPath, _ := writeWeztermStub(t, `[
+		{"window_id": 3, "tab_id": 4, "pane_id": 5, "workspace": "default", "title": "shell", "cwd": "file:///tmp/project", "tty_name": "/dev/pts/9"}
+	]`)
+	t.Setenv("WEZTERM_PANE", "")
+
+	c := NewClient(scriptPath)
+	panes, err := c.ListPanes()
+	if err != nil {
+		t.Fatalf("ListPanes() error: %v", err)
+	}
+	if len(panes) != 1 {
+		t.Fatalf("ListPanes() len = %d, want 1", len(panes))
+	}
+
+	pane := panes[0]
+	if pane.WindowID != 3 {
+		t.Fatalf("WindowID = %d, want 3", pane.WindowID)
+	}
+	if pane.TabID != 4 {
+		t.Fatalf("TabID = %d, want 4", pane.TabID)
+	}
+	if pane.Workspace != "default" {
+		t.Fatalf("Workspace = %q, want %q", pane.Workspace, "default")
+	}
+	if pane.Title != "shell" {
+		t.Fatalf("Title = %q, want %q", pane.Title, "shell")
+	}
+	if pane.TTYName != "/dev/pts/9" {
+		t.Fatalf("TTYName = %q, want %q", pane.TTYName, "/dev/pts/9")
+	}
+	if pane.CWD != "/tmp/project" {
+		t.Fatalf("CWD = %q, want %q", pane.CWD, "/tmp/project")
+	}
+	if pane.IsSelf {
+		t.Fatal("expected IsSelf=false when WEZTERM_PANE is unset")
+	}
+	if pane.IsActive {
+		t.Fatal("expected IsActive=false when WEZTERM_PANE is unset")
+	}
+}
+
+func TestListSessionsWithoutCurrentPaneEnv(t *testing.T) {
+	scriptPath, _ := writeWeztermStub(t, `[
+		{"window_id": 3, "tab_id": 4, "pane_id": 5, "workspace": "default", "title": "shell", "cwd": "/tmp/project", "tty_name": "/dev/pts/9"}
+	]`)
+	t.Setenv("WEZTERM_PANE", "")
+
+	c := NewClient(scriptPath)
+	sessions, err := c.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions() error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("ListSessions() len = %d, want 1", len(sessions))
+	}
+
+	session := sessions[0]
+	if session.ID != "5" {
+		t.Fatalf("ID = %q, want %q", session.ID, "5")
+	}
+	if session.Name != "shell" {
+		t.Fatalf("Name = %q, want %q", session.Name, "shell")
+	}
+	if session.TTY != "/dev/pts/9" {
+		t.Fatalf("TTY = %q, want %q", session.TTY, "/dev/pts/9")
 	}
 }
 
@@ -292,6 +367,39 @@ func TestSplitPaneUsesTopLevelAndPercent(t *testing.T) {
 	}
 }
 
+func TestSplitPaneOmitsPercentWhenZero(t *testing.T) {
+	scriptPath, argsPath := writeWeztermStub(t, "123\n")
+	c := NewClient(scriptPath)
+
+	if _, err := c.SplitPane(SplitPaneOptions{Direction: "top", Percent: 0}); err != nil {
+		t.Fatalf("SplitPane() error: %v", err)
+	}
+
+	gotArgs := readArgsLog(t, argsPath)
+	wantArgs := []string{"cli", "split-pane", "--top"}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("SplitPane args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestSplitPaneValidatesPercent(t *testing.T) {
+	c := NewClient("wezterm")
+	for _, tc := range []struct {
+		name    string
+		percent int
+	}{
+		{name: "negative", percent: -1},
+		{name: "too large", percent: 101},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := c.SplitPane(SplitPaneOptions{Percent: tc.percent})
+			if err == nil {
+				t.Fatalf("expected error for percent %d", tc.percent)
+			}
+		})
+	}
+}
+
 func TestMovePaneToNewTabUsesWindowID(t *testing.T) {
 	scriptPath, argsPath := writeWeztermStub(t, "")
 	c := NewClient(scriptPath)
@@ -309,6 +417,29 @@ func TestMovePaneToNewTabUsesWindowID(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("MovePaneToNewTab args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestMovePaneToNewTabValidatesIDs(t *testing.T) {
+	c := NewClient("wezterm")
+	tests := []struct {
+		name     string
+		paneID   int
+		windowID int
+	}{
+		{name: "zero pane", paneID: 0, windowID: 1},
+		{name: "negative pane", paneID: -1, windowID: 1},
+		{name: "zero window", paneID: 1, windowID: 0},
+		{name: "negative window", paneID: 1, windowID: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := c.MovePaneToNewTab(tt.paneID, tt.windowID)
+			if err == nil {
+				t.Fatalf("expected error for paneID=%d windowID=%d", tt.paneID, tt.windowID)
+			}
+		})
 	}
 }
 

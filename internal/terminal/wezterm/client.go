@@ -27,7 +27,10 @@ type PaneInfo struct {
 	Title     string
 	CWD       string
 	TTYName   string
-	IsActive  bool
+	IsSelf    bool
+	// IsActive is kept as a compatibility alias for IsSelf.
+	// It does not mean the pane is currently focused in the WezTerm UI.
+	IsActive bool
 }
 
 // SplitPaneOptions controls how SplitPane arranges a new pane.
@@ -73,7 +76,8 @@ type listEntry struct {
 	TTYName   string `json:"tty_name"`
 }
 
-func (e listEntry) toPaneInfo(activePaneID int) PaneInfo {
+func (e listEntry) toPaneInfo(selfPaneID int) PaneInfo {
+	isSelf := selfPaneID != 0 && e.PaneID == selfPaneID
 	return PaneInfo{
 		WindowID:  e.WindowID,
 		TabID:     e.TabID,
@@ -82,7 +86,8 @@ func (e listEntry) toPaneInfo(activePaneID int) PaneInfo {
 		Title:     e.Title,
 		CWD:       normalizeCWD(e.CWD),
 		TTYName:   e.TTYName,
-		IsActive:  activePaneID != 0 && e.PaneID == activePaneID,
+		IsSelf:    isSelf,
+		IsActive:  isSelf,
 	}
 }
 
@@ -231,6 +236,9 @@ func (c *Client) FocusSession(sessionID string) error {
 
 // SplitPane creates a new pane with the requested layout.
 func (c *Client) SplitPane(opts SplitPaneOptions) (int, error) {
+	if opts.Percent < 0 || opts.Percent > 100 {
+		return 0, fmt.Errorf("percent must be between 0 and 100")
+	}
 	args := []string{"split-pane"}
 	if opts.PaneID != 0 {
 		args = append(args, "--pane-id", strconv.Itoa(opts.PaneID))
@@ -274,6 +282,12 @@ func (c *Client) SplitPane(opts SplitPaneOptions) (int, error) {
 
 // MovePaneToNewTab moves a pane to a new tab in the specified window.
 func (c *Client) MovePaneToNewTab(paneID, windowID int) error {
+	if paneID <= 0 {
+		return fmt.Errorf("paneID must be positive")
+	}
+	if windowID <= 0 {
+		return fmt.Errorf("windowID must be positive")
+	}
 	_, err := c.run("move-pane-to-new-tab", "--pane-id", strconv.Itoa(paneID), "--window-id", strconv.Itoa(windowID))
 	return err
 }
