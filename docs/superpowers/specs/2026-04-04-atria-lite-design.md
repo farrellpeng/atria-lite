@@ -23,6 +23,7 @@
 - 不支持 tmux、Kitty、iTerm2 作为 lite 工作台的底部承载环境
 - 不在上方 monitor 中保留聊天页、设置页、嵌入终端页
 - 不做普通 pane 的全局统一管理，普通 pane 仅作为底部工作区最右侧活跃槽位的可选内容
+- 第一版不提供 `atria-lite stop` 或自动恢复启动前窗口布局的机制
 
 ## 已确认的产品边界
 
@@ -55,6 +56,7 @@
 一次性入口，负责：
 
 - 校验当前运行环境是否为 WezTerm
+- 读取 `WEZTERM_PANE` 识别启动自身的 pane、tab、window
 - 读取当前窗口中的 pane 列表
 - 识别 agent pane 与普通 pane
 - 按规则选择要保留在 lite 工作台中的 pane
@@ -70,6 +72,7 @@
 - 维护槽位绑定关系
 - 响应 agent 选中、普通 pane 选择、满槽替换提示
 - 周期性刷新当前窗口 pane 列表和 agent 状态
+- 使用启动时传入的自身 pane 信息，将 monitor pane 自身排除在 agent 列表之外
 
 ## 固定布局
 
@@ -88,9 +91,11 @@
 约束：
 
 - monitor pane 固定在顶部
+- monitor pane 在第一版通过 `split-pane --top --top-level --percent 35` 创建，整个会话期间高度保持不变
 - 下方工作区最多展开为 3 个 pane，且一旦展开到 2 个或 3 个时，所有 pane 始终同排
 - 不要求启动时就物理创建 3 个空 pane；槽位是逻辑概念，pane 按需拆分物化
 - 普通 pane 永远只占“当前最右侧的活跃槽位”
+- `--top-level` 只用于首次切出顶部 monitor pane；下方工作区后续只做水平拆分，不再对整窗使用 `--top-level`
 - pane 一旦进入底部槽位，其输入、焦点、复制、滚动、全屏等行为全部保持 WezTerm 原生
 
 ## 组件边界
@@ -101,8 +106,9 @@
 
 职责：
 
+- 直接持有 WezTerm 专用运行时能力，不经过 `terminal.Backend` / `CompositeBackend` / `CachedBackend`
 - 获取当前 pane、tab、window 上下文
-- 调用 `wezterm cli list --format json` 获取当前窗口 pane
+- 调用结构化的 WezTerm pane 列表能力获取当前窗口 pane，而不是只拿扁平 `terminal.Session`
 - 执行 `split-pane` / `move-pane-to-new-tab` / `activate-pane` 等编排动作
 - 生成 monitor 启动所需的上下文
 
@@ -119,6 +125,7 @@
 - 选中态
 - 满槽替换提示
 - 当前窗口范围内的 session 更新
+- 基于 `window_id` + `self_pane_id` 的当前窗口过滤
 
 移除：
 
@@ -128,6 +135,8 @@
 - embedded terminal
 - batch send
 - launch agent
+
+Lite monitor 同样直接持有 WezTerm 专用运行时能力，不需要复用现有多后端组合抽象。
 
 ### 3. Pane Slot Registry
 
@@ -161,13 +170,33 @@
 - `internal/terminal/monitor.go`：agent 状态分类
 - `internal/terminal/detect.go` 及相关逻辑：agent 类型识别
 - `internal/model` 中现有 session/status 类型
+- `InferAgentFromScreen` 作为标题不明确时的屏幕回退判定
+- 现有 `discoverAgent` 流程中的 CWD 解析与屏幕回退逻辑，作为 lite 发现流程的复用来源
 
 新逻辑只在“当前窗口过滤”和“槽位编排”上新增，不复制已有监控规则。
+
+## Starter 到 Monitor 的上下文
+
+`atria-lite start` 启动 `atria-lite monitor` 时，至少需要传递这些上下文：
+
+- `self_pane_id`：monitor 自身 pane id
+- `window_id`：当前 lite 工作台所属 window id
+- `tab_id`：当前 lite 工作台所属 tab id
+- `starter_pane_id`：启动命令最初所在 pane id
+- `slot_bindings`：初始 `Slot 1/2/3 -> pane_id` 绑定关系
+- `workspace_pane_ids`：当前底部工作区中仍受 lite 管理的 pane id 集合
+
+这个上下文不需要持久化到磁盘，但必须足够让 monitor 在首次刷新前就知道：
+
+- 哪个 pane 是自己
+- 哪些 pane 属于当前 lite 工作区
+- 当前 1/2/3 槽的初始占用情况
 
 ## Pane 分类与收敛规则
 
 启动时先对当前窗口 pane 做分类：
 
+- 排除 `WEZTERM_PANE` 指向的启动自身 pane，以及之后新建出来的 monitor pane
 - `agent pane`：能通过现有标题/屏幕模式识别为 Claude、Codex、OpenCode、Copilot 的 pane
 - `normal pane`：其余普通 shell、编辑器、日志 pane
 
@@ -191,7 +220,8 @@
 
 - 不销毁 pane 中的进程
 - 不强制关闭 pane
-- 通过 WezTerm CLI 将其移到新的 tab 或其他可预测位置
+- 第一版统一通过 `move-pane-to-new-tab --window-id <current_window_id>` 将其移到同一 window 下的新 tab
+- 第一版不依赖 `--new-window`
 
 ## 槽位模型
 
@@ -223,6 +253,8 @@
 - 一旦存在多个底部 pane，它们必须同排显示
 - 不使用“空白占位 pane”来凑满三栏
 - 当 agent 数量增加时，已保留的普通 pane 会右移到新的最右侧活跃槽位
+- 当某个 pane 退出或被移出当前工作区时，底部工作区不保留空槽位；依赖 WezTerm 在 pane 消失后自然收缩
+- 第一版不提供“主动合并 pane”的独立命令
 
 ## 装载规则
 
@@ -267,6 +299,7 @@
 - 替换 `Slot 3` 时，即使当前装的是普通 pane，也必须显式确认
 - 替换动作只改变 lite 工作台的槽位绑定，不影响 agent 进程本身的生存
 - 选择普通 pane 且当前为“3 个 agent 已满”时，只允许替换 `Slot 3`
+- 被替换出的 pane 不留在当前 lite 工作区中，而是移动到同一 window 下的新 tab
 
 ## 交互流程
 
@@ -319,6 +352,7 @@
 - 对应槽位自动置为空
 - agent 列表移除或更新该 session
 - monitor 给出轻量状态提示
+- 如果物理 pane 已因退出或移出而消失，则依赖 WezTerm 的自然收缩结果重建槽位视图，而不是保留占位 pane
 
 ## 错误处理
 
@@ -339,6 +373,18 @@
 - 任何 WezTerm CLI 编排步骤失败都立即终止
 - 不尝试做复杂回滚
 - 输出清晰错误信息，提示重新执行
+
+### 启动重排竞态
+
+- 读取 pane 列表与执行移动/拆分命令之间，用户可能新建、关闭或切换 pane
+- 第一版采用“每次关键编排动作前重新读取并校验 pane id 仍然存在”的保守策略
+- 若校验失败，则终止本次启动并提示用户重试，而不是猜测性继续重排
+
+### 退出 lite 模式
+
+- 第一版没有 `stop` 子命令
+- 退出 monitor 只结束顶部监控进程，不自动恢复启动前布局
+- 当前窗口中已经形成的 pane/tabs 保持在退出时的状态
 
 ### pane 消失 / 进程退出
 
@@ -380,8 +426,10 @@
 
 - 新增 `cmd/atria-lite`
 - 在 `internal/terminal/wezterm` 旁增加 lite 所需的窗口级编排辅助能力
+- 为 WezTerm 运行时补充结构化 pane 列表、split、move 等编排辅助方法
 - 在 `internal/tui` 中抽出一个精简 monitor 模型，而不是在现有主模型上继续堆条件分支
 - 新增独立的 slot/runtime 状态模块，避免把槽位逻辑混入现有 project/session store
+- slot registry 建议放在独立 lite 运行时模块中，而不是放进现有 `internal/model`
 
 ## 仍需坚持的 YAGNI 边界
 
