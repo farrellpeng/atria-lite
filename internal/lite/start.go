@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/sethdeckard/atria/internal/model"
-	"github.com/sethdeckard/atria/internal/terminal"
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
 )
 
@@ -20,6 +18,8 @@ type StartOptions struct {
 type wezTermRuntime interface {
 	ListPanes() ([]wezterm.PaneInfo, error)
 	ListWindowPanes(windowID int) ([]wezterm.PaneInfo, error)
+	ReadScreen(sessionID string, lines int) (string, error)
+	GetVar(sessionID, varName string) (string, error)
 	SplitPane(opts wezterm.SplitPaneOptions) (int, error)
 	MovePaneToNewTab(paneID, windowID int) error
 	ActivatePane(sessionID string) error
@@ -60,7 +60,7 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 		return err
 	}
 
-	bindings, overflow := PlanInitialLayout(classifyCandidates(windowPanes, starterPaneID))
+	bindings, overflow := PlanInitialLayout(classifyCandidates(runtime, windowPanes, starterPaneID))
 
 	for _, paneID := range overflow {
 		windowPanes, err := runtime.ListWindowPanes(starterPane.WindowID)
@@ -84,6 +84,26 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 	}
 
 	bindings = ShrinkBindings(bindings, paneIDSet(windowPanes))
+	monitorAnchorPaneID := starterPaneID
+	if len(bindings) > 0 {
+		monitorAnchorPaneID = bindings[0].PaneID
+
+		if err := requireWindowPanes(windowPanes, starterPane.WindowID, starterPaneID, monitorAnchorPaneID); err != nil {
+			return err
+		}
+		if err := runtime.MovePaneToNewTab(starterPaneID, starterPane.WindowID); err != nil {
+			return fmt.Errorf("move starter pane %d to new tab in window %d: %w", starterPaneID, starterPane.WindowID, err)
+		}
+
+		windowPanes, err = runtime.ListWindowPanes(starterPane.WindowID)
+		if err != nil {
+			return fmt.Errorf("recheck window panes before monitor split for window %d: %w", starterPane.WindowID, err)
+		}
+		if err := requireWindowPanes(windowPanes, starterPane.WindowID, monitorAnchorPaneID); err != nil {
+			return err
+		}
+	}
+
 	ctx := MonitorContext{
 		SelfPaneID:       0,
 		StarterPaneID:    starterPaneID,
@@ -98,7 +118,7 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 	}
 
 	monitorPaneID, err := runtime.SplitPane(wezterm.SplitPaneOptions{
-		PaneID:    starterPaneID,
+		PaneID:    monitorAnchorPaneID,
 		Direction: "top",
 		TopLevel:  true,
 		Percent:   monitorPercent(opts.MonitorPercent),
@@ -127,27 +147,13 @@ func findStarterPane(runtime wezTermRuntime, starterPaneID int) (wezterm.PaneInf
 	return wezterm.PaneInfo{}, fmt.Errorf("starter pane %d was not found", starterPaneID)
 }
 
-func classifyCandidates(panes []wezterm.PaneInfo, starterPaneID int) []CandidatePane {
+func classifyCandidates(runtime wezTermRuntime, panes []wezterm.PaneInfo, starterPaneID int) []CandidatePane {
 	candidates := make([]CandidatePane, 0, len(panes))
 	for _, pane := range panes {
 		if pane.PaneID == starterPaneID {
 			continue
 		}
-
-		agentType := terminal.DetectAgent(pane.Title)
-		kind := OccupantNormal
-		if agentType != model.AgentType("") {
-			kind = OccupantAgent
-		}
-
-		candidates = append(candidates, CandidatePane{
-			PaneID:    pane.PaneID,
-			WindowID:  pane.WindowID,
-			TabID:     pane.TabID,
-			Title:     pane.Title,
-			Kind:      kind,
-			AgentType: agentType,
-		})
+		candidates = append(candidates, classifyCandidatePane(runtime, pane))
 	}
 	return candidates
 }

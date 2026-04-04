@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,16 @@ import (
 )
 
 func TestRunHelpAndMonitorBehavior(t *testing.T) {
+	var monitorCalls []lite.MonitorContext
+	oldRunMonitorUI := runMonitorUI
+	runMonitorUI = func(ctx lite.MonitorContext) error {
+		monitorCalls = append(monitorCalls, ctx)
+		return nil
+	}
+	t.Cleanup(func() {
+		runMonitorUI = oldRunMonitorUI
+	})
+
 	validContext, err := lite.EncodeMonitorContext(lite.MonitorContext{
 		SelfPaneID:    1,
 		StarterPaneID: 2,
@@ -34,6 +45,8 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 		args       []string
 		selfPaneID string
 		wantCode   int
+		wantCalls  int
+		wantCtx    *lite.MonitorContext
 		wantStdout string
 		wantStderr string
 		stderrLike string
@@ -75,15 +88,29 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 			wantStdout: "Usage:",
 		},
 		{
-			name:     "monitor valid context",
-			args:     []string{"monitor", "--context-base64", validContext},
-			wantCode: 0,
+			name:      "monitor valid context",
+			args:      []string{"monitor", "--context-base64", validContext},
+			wantCode:  0,
+			wantCalls: 1,
+			wantCtx: &lite.MonitorContext{
+				SelfPaneID:    1,
+				StarterPaneID: 2,
+				WindowID:      3,
+				TabID:         4,
+			},
 		},
 		{
 			name:       "monitor fills self pane id from env when context is missing it",
 			args:       []string{"monitor", "--context-base64", contextMissingSelf},
 			selfPaneID: "99",
 			wantCode:   0,
+			wantCalls:  1,
+			wantCtx: &lite.MonitorContext{
+				SelfPaneID:    99,
+				StarterPaneID: 2,
+				WindowID:      3,
+				TabID:         4,
+			},
 		},
 		{
 			name:       "monitor invalid context",
@@ -101,6 +128,7 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			monitorCalls = nil
 			if tt.selfPaneID != "" {
 				t.Setenv("WEZTERM_PANE", tt.selfPaneID)
 			}
@@ -119,6 +147,12 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 			}
 			if tt.stderrLike != "" && !strings.Contains(stderr, tt.stderrLike) {
 				t.Fatalf("stderr %q does not contain %q", stderr, tt.stderrLike)
+			}
+			if len(monitorCalls) != tt.wantCalls {
+				t.Fatalf("runMonitorUI call count = %d, want %d", len(monitorCalls), tt.wantCalls)
+			}
+			if tt.wantCtx != nil && !reflect.DeepEqual(monitorCalls[0], *tt.wantCtx) {
+				t.Fatalf("runMonitorUI ctx = %#v, want %#v", monitorCalls[0], *tt.wantCtx)
 			}
 		})
 	}

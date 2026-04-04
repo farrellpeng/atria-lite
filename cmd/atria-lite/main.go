@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sethdeckard/atria/internal/lite"
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
 )
@@ -23,6 +24,13 @@ func (e usageError) Error() string {
 
 func main() {
 	os.Exit(run(os.Args[1:]))
+}
+
+var runMonitorUI = func(ctx lite.MonitorContext) error {
+	client := wezterm.NewClient("")
+	model := lite.NewModel(client, ctx)
+	_, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
+	return err
 }
 
 func run(args []string) int {
@@ -103,7 +111,7 @@ func runMonitor(args []string) error {
 	if err := ctx.Validate(); err != nil {
 		return usageError{msg: err.Error()}
 	}
-	return nil
+	return runMonitorUI(ctx)
 }
 
 func reportError(err error) int {

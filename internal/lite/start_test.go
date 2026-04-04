@@ -2,6 +2,7 @@ package lite
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -38,6 +39,10 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
 				{PaneID: 202, WindowID: 700, TabID: 701, Title: "notes"},
 			},
+			{
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
+				{PaneID: 202, WindowID: 700, TabID: 701, Title: "notes"},
+			},
 		},
 		splitPaneID: 999,
 	}
@@ -47,16 +52,19 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	if len(runtime.moveCalls) != 0 {
-		t.Fatalf("MovePaneToNewTab() calls = %v, want none", runtime.moveCalls)
+	wantMoves := []movePaneCall{
+		{PaneID: 101, WindowID: 700},
+	}
+	if !reflect.DeepEqual(runtime.moveCalls, wantMoves) {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want %#v", runtime.moveCalls, wantMoves)
 	}
 	if len(runtime.splitCalls) != 1 {
 		t.Fatalf("SplitPane() call count = %d, want 1", len(runtime.splitCalls))
 	}
 
 	got := runtime.splitCalls[0]
-	if got.PaneID != 101 {
-		t.Fatalf("SplitPane() PaneID = %d, want 101", got.PaneID)
+	if got.PaneID != 201 {
+		t.Fatalf("SplitPane() PaneID = %d, want 201", got.PaneID)
 	}
 	if got.Direction != "top" {
 		t.Fatalf("SplitPane() Direction = %q, want %q", got.Direction, "top")
@@ -144,6 +152,11 @@ func TestStartMovesOverflowPanesToNewTabInSameWindow(t *testing.T) {
 				{PaneID: 202, WindowID: 700, TabID: 701, Title: "codex"},
 				{PaneID: 203, WindowID: 700, TabID: 701, Title: "opencode"},
 			},
+			{
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
+				{PaneID: 202, WindowID: 700, TabID: 701, Title: "codex"},
+				{PaneID: 203, WindowID: 700, TabID: 701, Title: "opencode"},
+			},
 		},
 		splitPaneID: 999,
 	}
@@ -156,12 +169,16 @@ func TestStartMovesOverflowPanesToNewTabInSameWindow(t *testing.T) {
 	wantMoves := []movePaneCall{
 		{PaneID: 204, WindowID: 700},
 		{PaneID: 205, WindowID: 700},
+		{PaneID: 101, WindowID: 700},
 	}
 	if !reflect.DeepEqual(runtime.moveCalls, wantMoves) {
 		t.Fatalf("MovePaneToNewTab() calls = %#v, want %#v", runtime.moveCalls, wantMoves)
 	}
 	if len(runtime.splitCalls) != 1 {
 		t.Fatalf("SplitPane() call count = %d, want 1", len(runtime.splitCalls))
+	}
+	if runtime.splitCalls[0].PaneID != 201 {
+		t.Fatalf("SplitPane() PaneID = %d, want 201", runtime.splitCalls[0].PaneID)
 	}
 	if len(runtime.activateCalls) != 1 || runtime.activateCalls[0] != "999" {
 		t.Fatalf("ActivatePane() calls = %v, want [999]", runtime.activateCalls)
@@ -207,12 +224,82 @@ func TestStartRechecksPaneExistenceBeforeMutating(t *testing.T) {
 	}
 }
 
+func TestStartUsesScreenFallbackToDetectAgents(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "101")
+
+	runtime := &mockStartRuntime{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+		},
+		windowPanes: [][]wezterm.PaneInfo{
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 202, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 203, WindowID: 700, TabID: 701, Title: "notes"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 202, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 203, WindowID: 700, TabID: 701, Title: "notes"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 202, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 203, WindowID: 700, TabID: 701, Title: "notes"},
+			},
+			{
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 202, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 203, WindowID: 700, TabID: 701, Title: "notes"},
+			},
+		},
+		readScreens: map[int]string{
+			201: "Claude Code\n",
+			202: "OpenAI Codex\n› ",
+		},
+		splitPaneID: 999,
+	}
+	installMockStartRuntime(t, runtime)
+
+	if err := Start(StartOptions{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if len(runtime.splitCalls) != 1 {
+		t.Fatalf("SplitPane() call count = %d, want 1", len(runtime.splitCalls))
+	}
+	if runtime.splitCalls[0].PaneID != 201 {
+		t.Fatalf("SplitPane() PaneID = %d, want 201", runtime.splitCalls[0].PaneID)
+	}
+	ctx, err := DecodeMonitorContext(runtime.splitCalls[0].Command[3])
+	if err != nil {
+		t.Fatalf("DecodeMonitorContext() error = %v", err)
+	}
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 201, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 202, Kind: OccupantAgent},
+		{Slot: Slot3, PaneID: 203, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(ctx.SlotBindings, wantBindings) {
+		t.Fatalf("SlotBindings = %#v, want %#v", ctx.SlotBindings, wantBindings)
+	}
+	if !reflect.DeepEqual(runtime.moveCalls, []movePaneCall{{PaneID: 101, WindowID: 700}}) {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want starter moved only", runtime.moveCalls)
+	}
+}
+
 type mockStartRuntime struct {
 	panes           []wezterm.PaneInfo
 	listPanesErr    error
 	windowPanes     [][]wezterm.PaneInfo
 	listWindowErr   error
 	listWindowCalls int
+	readScreens     map[int]string
+	getVars         map[int]string
 	moveCalls       []movePaneCall
 	moveErr         error
 	splitCalls      []wezterm.SplitPaneOptions
@@ -255,6 +342,27 @@ func (m *mockStartRuntime) ListWindowPanes(windowID int) ([]wezterm.PaneInfo, er
 func (m *mockStartRuntime) MovePaneToNewTab(paneID, windowID int) error {
 	m.moveCalls = append(m.moveCalls, movePaneCall{PaneID: paneID, WindowID: windowID})
 	return m.moveErr
+}
+
+func (m *mockStartRuntime) ReadScreen(sessionID string, lines int) (string, error) {
+	for paneID, text := range m.readScreens {
+		if sessionID == strconv.Itoa(paneID) {
+			return text, nil
+		}
+	}
+	return "", nil
+}
+
+func (m *mockStartRuntime) GetVar(sessionID, varName string) (string, error) {
+	if varName != "path" {
+		return "", nil
+	}
+	for paneID, path := range m.getVars {
+		if sessionID == strconv.Itoa(paneID) {
+			return path, nil
+		}
+	}
+	return "", nil
 }
 
 func (m *mockStartRuntime) SplitPane(opts wezterm.SplitPaneOptions) (int, error) {
