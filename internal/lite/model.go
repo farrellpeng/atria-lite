@@ -227,6 +227,11 @@ func (m *Model) syncReplacePrompt() {
 	}
 	for _, pane := range m.panes {
 		if pane.PaneID == m.replacePane.PaneID {
+			if pane.Kind != OccupantAgent {
+				m.mode = ModeList
+				m.replacePane = CandidatePane{}
+				return
+			}
 			m.replacePane = pane
 			return
 		}

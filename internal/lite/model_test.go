@@ -305,6 +305,63 @@ func TestMonitorReturnsToListWhenReplaceCandidateDisappears(t *testing.T) {
 	}
 }
 
+func TestMonitorReturnsToListWhenReplaceCandidateReclassifiesToNormal(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+			{Slot: Slot2, PaneID: 12, Kind: OccupantAgent},
+			{Slot: Slot3, PaneID: 13, Kind: OccupantAgent},
+		},
+	}
+	m := NewModel(nil, ctx)
+
+	updated, _ := m.Update(windowPanesLoadedMsg{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "claude"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "opencode"},
+			{PaneID: 99, WindowID: 7, TabID: 70, Title: "claude"},
+		},
+	})
+	m = updated.(Model)
+	for i := 0; i < 3; i++ {
+		updated, _ = m.Update(keyMsg("j"))
+		m = updated.(Model)
+	}
+	updated, _ = m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if m.mode != ModeReplacePrompt {
+		t.Fatalf("mode = %v, want %v before refresh", m.mode, ModeReplacePrompt)
+	}
+
+	updated, _ = m.Update(windowPanesLoadedMsg{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "claude"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "opencode"},
+			{PaneID: 99, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+	})
+	got := updated.(Model)
+
+	if got.mode != ModeList {
+		t.Fatalf("mode = %v, want %v after candidate reclassifies to normal", got.mode, ModeList)
+	}
+	if got.replacePane.PaneID != 0 {
+		t.Fatalf("replacePane = %#v, want cleared replace candidate", got.replacePane)
+	}
+	if got.statusText != "3 agent pane(s) visible" {
+		t.Fatalf("statusText = %q, want list refresh status", got.statusText)
+	}
+	if strings.Contains(got.View(), "Replace Prompt") {
+		t.Fatalf("View() = %q, should leave replace prompt after candidate reclassifies", got.View())
+	}
+}
+
 func keyMsg(key string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 }
