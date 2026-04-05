@@ -33,8 +33,7 @@ func TestFindCodexBinary(t *testing.T) {
 	// When codex is on PATH, returns the path
 	path := findCodexBinary()
 	if path == "" {
-		t.Log("codex not found on PATH (expected in CI)")
-		return
+		t.Skip("codex not found")
 	}
 	// Verify path is executable
 	cmd := exec.Command(path, "--version")

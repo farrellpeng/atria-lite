@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -40,6 +41,10 @@ func (c *Client) Cached() *QuotaInfo {
 }
 
 func findCodexBinary() string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return ""
+	}
 	// 1. Look in PATH
 	if path, err := exec.LookPath("codex"); err == nil {
 		return path
@@ -49,7 +54,6 @@ func findCodexBinary() string {
 		return nvmPath
 	}
 	// 3. Common fallback paths
-	home := os.Getenv("HOME")
 	for _, p := range []string{
 		home + "/.local/bin/codex",
 		home + "/.volta/bin/codex",
@@ -59,7 +63,7 @@ func findCodexBinary() string {
 		"/opt/homebrew/bin/codex",
 		"/usr/bin/codex",
 	} {
-		if info, err := os.Stat(p); err == nil && info.Mode()&0111 != 0 {
+		if info, err := os.Stat(p); err == nil && info.Mode()&0o111 != 0 {
 			return p
 		}
 	}
@@ -68,17 +72,15 @@ func findCodexBinary() string {
 
 func findNvmCodex() string {
 	home := os.Getenv("HOME")
+	if home == "" {
+		return ""
+	}
 	pattern := home + "/.nvm/versions/node/*/bin/codex"
 	matches, _ := filepath.Glob(pattern)
 	if len(matches) == 0 {
 		return ""
 	}
-	// Pick highest version (lexicographic sort is sufficient for semver)
-	var best string
-	for _, m := range matches {
-		if best == "" || m > best {
-			best = m
-		}
-	}
-	return best
+	// Sort descending so newest is first
+	sort.Slice(matches, func(i, j int) bool { return matches[i] > matches[j] })
+	return matches[0]
 }
