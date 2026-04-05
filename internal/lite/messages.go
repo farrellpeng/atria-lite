@@ -1,6 +1,9 @@
 package lite
 
-import "github.com/sethdeckard/atria/internal/terminal/wezterm"
+import (
+	"github.com/sethdeckard/atria/internal/codex"
+	"github.com/sethdeckard/atria/internal/terminal/wezterm"
+)
 
 type refreshTickMsg struct{}
 
@@ -35,4 +38,10 @@ type slotActionCompletedMsg struct {
 
 type slotActionFailedMsg struct {
 	err error
+}
+
+type codexQuotaTickMsg struct{}
+
+type codexQuotaMsg struct {
+	quota *codex.QuotaInfo
 }

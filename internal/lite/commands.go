@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sethdeckard/atria/internal/codex"
 	"github.com/sethdeckard/atria/internal/model"
 	"github.com/sethdeckard/atria/internal/terminal"
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
@@ -17,6 +18,7 @@ const (
 	liteDiscoveryInterval = 3 * time.Second
 	liteStatusInterval    = 1 * time.Second
 	liteSpinnerInterval   = 100 * time.Millisecond
+	liteQuotaInterval     = 60 * time.Second
 )
 
 const (
@@ -42,6 +44,21 @@ func spinnerTickCmd() tea.Cmd {
 	return tea.Tick(liteSpinnerInterval, func(time.Time) tea.Msg {
 		return spinnerTickMsg{}
 	})
+}
+
+func quotaTickCmd() tea.Cmd {
+	return tea.Tick(liteQuotaInterval, func(time.Time) tea.Msg {
+		return codexQuotaTickMsg{}
+	})
+}
+
+func fetchCodexQuota(client *codex.Client) tea.Cmd {
+	if client == nil || !client.Available() {
+		return nil
+	}
+	return func() tea.Msg {
+		return codexQuotaMsg{quota: client.Fetch()}
+	}
 }
 
 func refreshWindowPanes(client windowPaneClient, ctx MonitorContext) tea.Cmd {
