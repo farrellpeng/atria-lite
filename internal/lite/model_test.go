@@ -79,6 +79,34 @@ func TestRefreshBuildsDisplayRowsFromDiscoveredCWD(t *testing.T) {
 	}
 }
 
+func TestMonitorViewUsesAtriaStyleChromeAndSecondarySlots(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		},
+	}
+	m := NewModel(nil, ctx)
+
+	updated, _ := m.Update(windowPanesLoadedMsg{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+	})
+	got := updated.(Model)
+
+	view := got.View()
+	for _, want := range []string{"agents", "atria", "slot1", "enter:load", "n:normal panes", "r:refresh"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() = %q, want to contain %q", view, want)
+		}
+	}
+}
+
 func TestSelectingNormalPaneFromPickerLoadsIntoRightmostSlot(t *testing.T) {
 	ctx := MonitorContext{
 		SelfPaneID: 200,
@@ -265,6 +293,11 @@ func TestMonitorFiltersToWindowAndExcludesSelf(t *testing.T) {
 	if !strings.Contains(view, "codex") {
 		t.Fatalf("View() = %q, want to contain agent row", view)
 	}
+	for _, want := range []string{"agents", "atria", "slot1"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() = %q, want to contain %q", view, want)
+		}
+	}
 	if strings.Contains(view, "shell") {
 		t.Fatalf("View() = %q, should not show normal panes in agent list", view)
 	}
@@ -317,7 +350,12 @@ func TestMonitorShowsReplacePromptWhenThreeSlotsFull(t *testing.T) {
 	if !strings.Contains(view, "Replace") {
 		t.Fatalf("View() = %q, want replace prompt", got.View())
 	}
-	if strings.Contains(view, "enter load agent") {
+	for _, want := range []string{"atria", "esc:back", "r:refresh"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() = %q, want to contain %q", view, want)
+		}
+	}
+	if strings.Contains(view, "enter:load") {
 		t.Fatalf("View() = %q, replace prompt footer should not show list-mode actions", view)
 	}
 }
@@ -357,10 +395,15 @@ func TestMonitorShowsNormalPanePickerOnlyForNonAgents(t *testing.T) {
 	if !strings.Contains(view, "shell") {
 		t.Fatalf("View() = %q, want normal pane picker entry", view)
 	}
+	for _, want := range []string{"agents", "atria", "enter:load", "esc:back", "r:refresh"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() = %q, want to contain %q", view, want)
+		}
+	}
 	if strings.Contains(view, "codex") || strings.Contains(view, "claude") {
 		t.Fatalf("View() = %q, should only list normal panes in picker", view)
 	}
-	if strings.Contains(view, "enter load agent") {
+	if strings.Contains(view, "n:normal panes") {
 		t.Fatalf("View() = %q, normal picker footer should not show list-mode actions", view)
 	}
 }
@@ -467,8 +510,10 @@ func TestMonitorReclassifiesBindingsFromLivePanes(t *testing.T) {
 	}
 
 	view := got.View()
-	if !strings.Contains(view, "slot1: pane 22 (agent)") || !strings.Contains(view, "slot2: pane 11 (normal)") {
-		t.Fatalf("View() = %q, want reclassified slot summary", view)
+	for _, want := range []string{"slot1", "22", "agent", "slot2", "11", "normal"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() = %q, want reclassified slot summary to contain %q", view, want)
+		}
 	}
 }
 

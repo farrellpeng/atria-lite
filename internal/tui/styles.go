@@ -99,3 +99,18 @@ var selectedBg = lipgloss.AdaptiveColor{Light: "#d0d0ff", Dark: "#3a3a5c"}
 func withSelectedBg(s lipgloss.Style) lipgloss.Style {
 	return s.Background(selectedBg)
 }
+
+// RenderDim applies the shared secondary text style.
+func RenderDim(text string) string {
+	return dimStyle.Render(text)
+}
+
+// RenderFooter applies the shared footer help style.
+func RenderFooter(text string) string {
+	return footerStyle.Render(text)
+}
+
+// RenderSelectedText applies the shared selected-row style.
+func RenderSelectedText(text string) string {
+	return selectedTextStyle.Render(text)
+}

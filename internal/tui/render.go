@@ -116,6 +116,12 @@ func renderTitleBar(title string, width int) string {
 	return renderTitleBarWithSort(title, "", width, true)
 }
 
+// RenderTitleBar exposes the standard Atria title bar for reuse in other
+// internal TUIs that should match the main application chrome.
+func RenderTitleBar(title string, width int) string {
+	return renderTitleBar(title, width)
+}
+
 // renderTitleBarWithSort renders a title bar with an optional sort label
 // appended to the title (for narrow mode where column headers are hidden).
 // When showBranding is false, the right-aligned "atria" text is suppressed.
@@ -152,4 +158,10 @@ func renderTitleBarWithSort(title, sortLabel string, width int, showBranding boo
 	sb.WriteString(dimStyle.Render("  " + strings.Repeat("\u2500", sepWidth)))
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// TruncateToWidth exposes the shared width-aware truncation helper for other
+// internal views that need to align with Atria's rendering rules.
+func TruncateToWidth(s string, maxWidth int) string {
+	return truncateToWidth(s, maxWidth)
 }
