@@ -44,5 +44,5 @@ func FormatAgentStatus(status model.AgentStatus, activity, attention string, spi
 // RenderSelectedStatusCell applies the selected-row background while
 // preserving the status-specific foreground color.
 func RenderSelectedStatusCell(style lipgloss.Style, text string) string {
-	return withSelectedBg(style).Bold(true).Render(text)
+	return WithSelectedBg(style).Bold(true).Render(text)
 }

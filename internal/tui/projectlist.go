@@ -405,7 +405,7 @@ func RenderAgentTypeCell(t model.AgentType, text string) string {
 // RenderSelectedAgentTypeCell applies the standard selected-row background
 // while preserving the agent-specific foreground color.
 func RenderSelectedAgentTypeCell(t model.AgentType, text string) string {
-	return withSelectedBg(agentTypeStyle(t)).Bold(true).Render(text)
+	return WithSelectedBg(agentTypeStyle(t)).Bold(true).Render(text)
 }
 
 // rowColumns holds pre-computed, unstyled column strings for a single row.
@@ -485,8 +485,8 @@ func formatSelectedRow(r projectRow, nameWidth, typeWidth, totalWidth int, spinn
 	if showEnv {
 		selEnv = selectedTextStyle.Render(c.env)
 	}
-	selAgent := withSelectedBg(c.agentSty).Bold(true).Render(c.agent)
-	selStatus := withSelectedBg(c.statusSty).Bold(true).Width(c.remaining).Render(c.status)
+	selAgent := WithSelectedBg(c.agentSty).Bold(true).Render(c.agent)
+	selStatus := WithSelectedBg(c.statusSty).Bold(true).Width(c.remaining).Render(c.status)
 	return selectedTextStyle.Render(c.name) +
 		selAgent +
 		selEnv + selStatus +

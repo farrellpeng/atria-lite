@@ -96,7 +96,7 @@ var (
 
 var selectedBg = lipgloss.AdaptiveColor{Light: "#d0d0ff", Dark: "#3a3a5c"}
 
-func withSelectedBg(s lipgloss.Style) lipgloss.Style {
+func WithSelectedBg(s lipgloss.Style) lipgloss.Style {
 	return s.Background(selectedBg)
 }
 
@@ -113,4 +113,19 @@ func RenderFooter(text string) string {
 // RenderSelectedText applies the shared selected-row style.
 func RenderSelectedText(text string) string {
 	return selectedTextStyle.Render(text)
+}
+
+// QuotaPercentageStyle returns green/yellow/red based on percentage.
+func QuotaPercentageStyle(pct float64) lipgloss.Style {
+	switch {
+	case pct >= 80:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#cc0000", Dark: "#ff4444"})
+	case pct >= 50:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#b8860b", Dark: "#e0af68"})
+	default:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#2d7d46", Dark: "#9ece6a"})
+	}
 }
