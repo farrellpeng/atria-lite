@@ -119,3 +119,51 @@ func TestFindCodexBinary(t *testing.T) {
 		t.Errorf("codex at %s is not executable: %v", path, err)
 	}
 }
+
+func TestClientFetch_NotAvailable(t *testing.T) {
+	c := &Client{codexBin: "", cacheTTL: 60 * time.Second}
+	if c.Available() {
+		t.Skip("codex available, skipping not-available test")
+	}
+	result := c.Fetch()
+	if result != nil {
+		t.Errorf("Fetch() = %v, want nil when not available", result)
+	}
+}
+
+func TestClientFetch_Integration(t *testing.T) {
+	path := findCodexBinary()
+	if path == "" {
+		t.Skip("codex not found")
+	}
+	c := NewClient()
+	if !c.Available() {
+		t.Skip("codex not available")
+	}
+	result := c.Fetch()
+	// result may be nil if app-server fails or returns error
+	t.Logf("Fetch() = %+v", result)
+}
+
+func TestCached(t *testing.T) {
+	c := NewClient()
+	// No cache initially
+	if c.Cached() != nil {
+		t.Error("Cached() on empty client should return nil")
+	}
+	if c.cachedOrNil() != nil {
+		t.Error("cachedOrNil() on empty client should return nil")
+	}
+
+	// Set cache manually
+	c.mu.Lock()
+	c.cache = &QuotaInfo{PrimaryPct: 42.5, FetchedAt: time.Now()}
+	c.mu.Unlock()
+
+	if c.Cached() == nil {
+		t.Error("Cached() should return the cached value")
+	}
+	if c.Cached().PrimaryPct != 42.5 {
+		t.Errorf("PrimaryPct = %.1f, want 42.5", c.Cached().PrimaryPct)
+	}
+}

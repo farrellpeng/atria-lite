@@ -1,6 +1,9 @@
 package codex
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,11 +38,127 @@ func (c *Client) Available() bool {
 }
 
 func (c *Client) Fetch() *QuotaInfo {
-	return nil // stub
+	if c.codexBin == "" {
+		return nil
+	}
+
+	// Use 15s for first fetch (app-server cold start), 8s thereafter
+	timeout := 15 * time.Second
+	c.mu.RLock()
+	if c.cache != nil {
+		timeout = 8 * time.Second
+	}
+	c.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, c.codexBin, "app-server", "--listen", "stdio://")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return c.cachedOrNil()
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return c.cachedOrNil()
+	}
+
+	if err := cmd.Start(); err != nil {
+		return c.cachedOrNil()
+	}
+
+	// Deferred cleanup: close stdin to unblock app-server, then wait
+	defer func() {
+		stdin.Close()
+		cmd.Wait()
+	}()
+
+	// Run scanner reading in a goroutine so we can select on ctx
+	respCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if len(line) == 0 || line[0] != '{' {
+				continue
+			}
+			// Check if this line has id=1 or id=2
+			if hasID(line, 1) || hasID(line, 2) {
+				select {
+				case respCh <- line:
+				default:
+				}
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			errCh <- err
+		}
+	}()
+
+	// Send initialize
+	fmt.Fprintf(stdin, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"atria-lite\",\"version\":\"1.0.0\"}}}\n")
+
+	// Wait for initialize response (id=1)
+	select {
+	case <-respCh:
+		// ok
+	case <-errCh:
+		return c.cachedOrNil()
+	case <-ctx.Done():
+		return c.cachedOrNil()
+	}
+
+	// Send rateLimits request
+	fmt.Fprintf(stdin, "{\"id\":2,\"method\":\"account/rateLimits/read\"}\n")
+
+	// Wait for rateLimits response (id=2)
+	select {
+	case raw := <-respCh:
+		qi, err := parseRateLimitsResponse(raw)
+		if err != nil || qi == nil {
+			return c.cachedOrNil()
+		}
+		c.mu.Lock()
+		c.cache = qi
+		c.mu.Unlock()
+		return qi
+	case <-errCh:
+		return c.cachedOrNil()
+	case <-ctx.Done():
+		return c.cachedOrNil()
+	}
+}
+
+// hasID returns true if the JSON line contains the given id.
+// Lightweight check: look for `"id":N` pattern without full parsing.
+func hasID(line []byte, id int) bool {
+	target := fmt.Sprintf("\"id\":%d", id)
+	return bytes.Contains(line, []byte(target))
+}
+
+func (c *Client) cachedOrNil() *QuotaInfo {
+	c.mu.RLock()
+	if c.cache == nil {
+		c.mu.RUnlock()
+		return nil
+	}
+	if time.Since(c.cache.FetchedAt) > c.cacheTTL {
+		c.mu.RUnlock()
+		c.mu.Lock()
+		c.cache = nil
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.RUnlock()
+	return c.cache
 }
 
 func (c *Client) Cached() *QuotaInfo {
-	return nil // stub
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cache
 }
 
 func findCodexBinary() string {
