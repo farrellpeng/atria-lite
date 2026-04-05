@@ -325,6 +325,8 @@ git commit -m "codex: add JSON-RPC rate limits parsing and time formatting"
 **文件：**
 - 修改：`internal/codex/client.go` — 实现完整的 Fetch 逻辑
 
+**重要设计决策：** 使用单个长期 scanner 顺序消费 stdout，收到响应行后立即停止，避免 Scanner 缓冲区导致数据丢失。按 `{"id":N}` 中的 id 过滤响应。
+
 - [ ] **步骤 1：编写 Fetch 集成测试**
 
 ```go
@@ -368,77 +370,124 @@ func TestClientFetch_Integration(t *testing.T) {
 
 - [ ] **步骤 3：实现 Fetch（完整 JSON-RPC 协议）**
 
+关键实现点：
+- 使用单个 `bufio.Scanner` 贯穿整个 Fetch 生命周期，每次 Scan 读一行
+- `readResponse(id)` 函数循环 Scan 直到找到匹配 id 的 JSON 行或超时/结束
+- 首次调用用 15s 超时（给 app-server 冷启动留余地），后续调用用 8s
+- 任何错误路径都先尝试返回 fresh cache
+
 ```go
 func (c *Client) Fetch() *QuotaInfo {
     if c.codexBin == "" {
         return nil
     }
-    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+
+    // Use 15s for first fetch (app-server cold start), 8s thereafter
+    timeout := 15 * time.Second
+    c.mu.RLock()
+    if c.cache != nil {
+        timeout = 8 * time.Second
+    }
+    c.mu.RUnlock()
+
+    ctx, cancel := context.WithTimeout(context.Background(), timeout)
     defer cancel()
 
     cmd := exec.CommandContext(ctx, c.codexBin, "app-server", "--listen", "stdio://")
-    stdin, err := cmd.StdinPipe()
+    stdin, err := cmd.StdoutPipe()
     if err != nil {
-        return nil
+        return c.cachedOrNil()
     }
     stdout, err := cmd.StdoutPipe()
     if err != nil {
-        return nil
-    }
-    stderr, err := cmd.StderrPipe()
-    if err != nil {
-        return nil
+        return c.cachedOrNil()
     }
 
     if err := cmd.Start(); err != nil {
-        return nil
+        return c.cachedOrNil()
     }
+
+    // Deferred cleanup: close stdin to unblock app-server, then wait
+    done := make(chan struct{})
     defer func() {
         stdin.Close()
         cmd.Wait()
+        close(done)
+    }()
+
+    // Run scanner reading in a goroutine so we can select on ctx
+    respCh := make(chan []byte, 1)
+    errCh := make(chan error, 1)
+    go func() {
+        scanner := bufio.NewScanner(stdout)
+        for scanner.Scan() {
+            line := scanner.Bytes()
+            if len(line) == 0 || line[0] != '{' {
+                continue
+            }
+            // Check if this line has the id we're waiting for
+            if hasID(line, 1) || hasID(line, 2) {
+                select {
+                case respCh <- line:
+                default:
+                }
+                return
+            }
+        }
+        if err := scanner.Err(); err != nil {
+            errCh <- err
+        }
     }()
 
     // Send initialize
-    initReq := `{"id":1,"method":"initialize","params":{"clientInfo":{"name":"atria-lite","version":"1.0.0"}}}`
-    fmt.Fprintln(stdin, initReq)
+    fmt.Fprintf(stdin, `{"id":1,"method":"initialize","params":{"clientInfo":{"name":"atria-lite","version":"1.0.0"}}}\n`)
 
-    // Read initialize response (skip noise)
-    resp := readJSONResponse(stdout, ctx)
-    if resp == nil {
-        return nil
+    // Wait for initialize response (id=1)
+    select {
+    case <-respCh:
+        // ok
+    case <-errCh:
+        return c.cachedOrNil()
+    case <-ctx.Done():
+        return c.cachedOrNil()
     }
 
     // Send rateLimits request
-    rateReq := `{"id":2,"method":"account/rateLimits/read"}`
-    fmt.Fprintln(stdin, rateReq)
+    fmt.Fprintf(stdin, `{"id":2,"method":"account/rateLimits/read"}\n`)
 
-    resp = readJSONResponse(stdout, ctx)
-    if resp == nil {
-        return nil
+    // Wait for rateLimits response (id=2)
+    select {
+    case raw := <-respCh:
+        qi, err := parseRateLimitsResponse(raw)
+        if err != nil || qi == nil {
+            return c.cachedOrNil()
+        }
+        c.mu.Lock()
+        c.cache = qi
+        c.mu.Unlock()
+        return qi
+    case <-errCh:
+        return c.cachedOrNil()
+    case <-ctx.Done():
+        return c.cachedOrNil()
     }
-
-    qi, err := parseRateLimitsResponse(resp)
-    if err != nil || qi == nil {
-        return nil
-    }
-
-    c.mu.Lock()
-    c.cache = qi
-    c.mu.Unlock()
-    return qi
 }
 
-func readJSONResponse(r io.Reader, ctx context.Context) []byte {
-    scanner := bufio.NewScanner(r)
-    for scanner.Scan() {
-        line := scanner.Bytes()
-        if len(line) > 0 && line[0] == '{' {
-            return line
-        }
-    }
-    return nil
+// hasID returns true if the JSON line contains the given id.
+// Lightweight check: look for `"id":N` pattern without full parsing.
+func hasID(line []byte, id int) bool {
+    target := fmt.Sprintf(`"id":%d`, id)
+    return bytes.Contains(line, []byte(target))
+}
+
+func (c *Client) cachedOrNil() *QuotaInfo {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+    return c.cache
 }
 ```
+
+**关于 Scanner 缓冲区的说明：** `bufio.Scanner` 默认最大 token size 是 64KB。JSON-RPC 响应行通常远小于此值。如果 `codex app-server` 输出了非 JSON 行（如启动信息），这些行会在循环中被跳过（`line[0] != '{'`），不会进入缓冲区。当 id 匹配的行出现时立即返回，不会有数据丢失问题。
 
 - [ ] **步骤 4：运行测试**
 
@@ -450,6 +499,67 @@ func readJSONResponse(r io.Reader, ctx context.Context) []byte {
 ```bash
 git add internal/codex/client.go internal/codex/client_test.go
 git commit -m "codex: implement Fetch with JSON-RPC over stdio"
+```
+
+---
+
+## 任务 4b：缓存回退
+
+**文件：**
+- 修改：`internal/codex/client.go` — 实现 Cached() 并在 Fetch 失败时回退
+
+- [ ] **步骤 1：编写缓存测试**
+
+```go
+func TestCached(t *testing.T) {
+    c := NewClient()
+    // No cache initially
+    if c.Cached() != nil {
+        t.Error("Cached() on empty client should return nil")
+    }
+    if c.cachedOrNil() != nil {
+        t.Error("cachedOrNil() on empty client should return nil")
+    }
+
+    // Set cache manually
+    c.mu.Lock()
+    c.cache = &QuotaInfo{PrimaryPct: 42.5, FetchedAt: time.Now()}
+    c.mu.Unlock()
+
+    if c.Cached() == nil {
+        t.Error("Cached() should return the cached value")
+    }
+    if c.Cached().PrimaryPct != 42.5 {
+        t.Errorf("PrimaryPct = %.1f, want 42.5", c.Cached().PrimaryPct)
+    }
+}
+```
+
+- [ ] **步骤 2：运行测试验证失败**
+
+运行：`go test ./internal/codex/... -v -run TestCached`
+预期：FAIL — `Cached()` not defined
+
+- [ ] **步骤 3：实现 Cached()**
+
+```go
+func (c *Client) Cached() *QuotaInfo {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+    return c.cache
+}
+```
+
+- [ ] **步骤 4：运行测试验证通过**
+
+运行：`go test ./internal/codex/... -v -run TestCached`
+预期：PASS
+
+- [ ] **步骤 5：Commit**
+
+```bash
+git add internal/codex/client.go internal/codex/client_test.go
+git commit -m "codex: add Cached() for cache access"
 ```
 
 ---
@@ -468,11 +578,11 @@ git commit -m "codex: implement Fetch with JSON-RPC over stdio"
 type codexQuotaTickMsg struct{}
 
 type codexQuotaMsg struct {
-    quota interface{} // *codex.QuotaInfo — use interface{} to avoid import cycle
+    quota *codex.QuotaInfo
 }
 ```
 
-注：`codexQuotaMsg.quota` 使用 `interface{}` 是因为它出现在 `tea.Msg` 中会流经整个 Update switch，而 `lite` 包导入了 `model`，`codex` 包应只被 `lite` 内部使用，不应出现在消息类型中。`Model.codexClient` 和 `Model.codexQuota` 字段不是消息，可以使用具体类型 `*codex.Client` 和 `*codex.QuotaInfo`（见任务 6）。
+`lite` 直接 import `codex` 不会形成循环依赖（`codex` 不依赖 `lite` 或 `model`），因此使用具体类型保留编译期类型安全。
 
 - [ ] **步骤 2：运行测试验证编译通过**
 
@@ -492,16 +602,12 @@ func quotaTickCmd() tea.Cmd {
     })
 }
 
-func fetchCodexQuota(client interface{}) tea.Cmd {
-    if client == nil {
-        return nil
-    }
-    c := client.(*codex.Client)
-    if !c.Available() {
+func fetchCodexQuota(client *codex.Client) tea.Cmd {
+    if client == nil || !client.Available() {
         return nil
     }
     return func() tea.Msg {
-        return codexQuotaMsg{quota: c.Fetch()}
+        return codexQuotaMsg{quota: client.Fetch()}
     }
 }
 ```
@@ -532,8 +638,8 @@ git commit -m "lite: add codexQuotaTickMsg, codexQuotaMsg, and fetch commands"
 ```go
 type Model struct {
     // ... existing fields ...
-    codexClient interface{} // *codex.Client — interface{} to avoid import cycle in tea.Msg
-    codexQuota  interface{} // *codex.QuotaInfo
+    codexClient *codex.Client   // nil if codex binary not found (Available() == false)
+    codexQuota  *codex.QuotaInfo // global account-level quota cache
 }
 ```
 
@@ -569,7 +675,7 @@ func (m Model) hasCodexPanes() bool {
 }
 
 func (m *Model) ensureQuotaTick() tea.Cmd {
-    if m.codexClient == nil || !m.codexClient.(*codex.Client).Available() {
+    if m.codexClient == nil || !m.codexClient.Available() {
         return nil
     }
     if !m.hasCodexPanes() || m.codexQuota != nil {
@@ -589,8 +695,7 @@ func (m Model) hasCodexQuota() bool {
 
 ```go
 case codexQuotaTickMsg:
-    c := m.codexClient.(*codex.Client)
-    if c != nil && c.Available() && m.hasCodexPanes() {
+    if m.codexClient != nil && m.codexClient.Available() && m.hasCodexPanes() {
         return m, fetchCodexQuota(m.codexClient)
     }
     return m, nil
@@ -773,7 +878,7 @@ func TestRenderStatusCell(t *testing.T) {
 注：测试需要在 test 文件顶部添加 import：
 
 ```go
-import "internal/codex"
+import "github.com/sethdeckard/atria/internal/codex"
 ```
 
 - [ ] **步骤 2：运行测试验证失败**
@@ -786,11 +891,10 @@ import "internal/codex"
 ```go
 // formatQuotaSuffix builds the quota suffix text and returns its style.
 // Returns ("", zero) if maxChars is insufficient for the minimum suffix.
-func formatQuotaSuffix(quota interface{}, maxChars int) (string, lipgloss.Style) {
-    if quota == nil || maxChars < 8 {
+func formatQuotaSuffix(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style) {
+    if qi == nil || maxChars < 8 {
         return "", lipgloss.NewStyle()
     }
-    qi := quota.(*codex.QuotaInfo)
 
     // Build primary: " · 42% (2h10m)"
     primary := fmt.Sprintf(" \u00b7 %.0f%% (%s)", qi.PrimaryPct, qi.PrimaryReset)
