@@ -83,13 +83,11 @@ type Model struct {
 
 ### Init change: `internal/lite/model.go`
 
+Init does NOT fetch quota immediately — pane data isn't available yet. The first quota fetch happens after the first `candidatePanesLoadedMsg` or `paneStatusesLoadedMsg` arrives and reveals a Codex pane. This follows the existing pattern where status ticks and spinner ticks only start after agent panes are discovered.
+
 ```go
 func (m Model) Init() tea.Cmd {
-    cmds := []tea.Cmd{refreshWindowPanes(m.client, m.ctx)}
-    if m.codexClient.Available() {
-        cmds = append(cmds, fetchCodexQuota(m.codexClient))
-    }
-    return tea.Batch(cmds...)
+    return refreshWindowPanes(m.client, m.ctx)
 }
 ```
 
@@ -128,7 +126,7 @@ func fetchCodexQuota(client *codex.Client) tea.Cmd {
 
 ```go
 case codexQuotaTickMsg:
-    if m.codexClient.Available() {
+    if m.codexClient.Available() && m.hasCodexPanes() {
         return m, fetchCodexQuota(m.codexClient)
     }
     return m, nil
@@ -137,22 +135,105 @@ case codexQuotaMsg:
     if msg.quota != nil {
         m.codexQuota = msg.quota
     }
-    return m, quotaTickCmd()
+    if m.hasCodexPanes() {
+        return m, quotaTickCmd()
+    }
+    return m, nil
+```
+
+Quota polling is gated by `hasCodexPanes()`, matching the existing pattern for status ticks (`hasAgentPanes()`) and spinner ticks (`hasWorkingPanes()`). The polling loop starts only when Codex panes are present and stops when the last one disappears.
+
+First quota fetch is triggered in `candidatePanesLoadedMsg` and `paneStatusesLoadedMsg` handlers (where pane data first becomes available), by appending `m.ensureQuotaTick()` to the returned `tea.Batch`:
+
+```go
+func (m *Model) ensureQuotaTick() tea.Cmd {
+    if m.codexClient.Available() && m.hasCodexPanes() && m.codexQuota == nil {
+        return fetchCodexQuota(m.codexClient) // immediate first fetch
+    }
+    return nil
+}
+
+func (m Model) hasCodexPanes() bool {
+    for _, pane := range m.panes {
+        if pane.Kind == OccupantAgent && pane.AgentType == model.AgentCodex {
+            return true
+        }
+    }
+    return false
+}
 ```
 
 ### Display: `internal/lite/view.go`
 
-Modified `renderPaneRow` — when the pane is a Codex agent and `m.codexQuota` is non-nil, append quota to status text **before** truncation.
+#### Column width adjustment
 
-**Column width adjustment:** `statusWidth` is increased from 24→32 (narrow) and 28→36 (wide) to accommodate quota text. The CWD column shrinks by the same amount. This is necessary because the current 24-char status column cannot fit both status text and quota suffix.
+`columnWidths()` is modified to give the status column more room. Target values: 32 (narrow) / 36 (wide), but these are targets, not guarantees — the existing CWD-minimum-12 shrink logic still applies. If total width is insufficient, `statusWidth` falls back toward the current 24/28 values.
 
-The quota string is built in a helper:
+Implementation: add a second expansion pass after the existing shrink loops. When any Codex pane has quota, expand `statusWidth` up to the target and shrink CWD accordingly (minimum CWD stays at 12). When no Codex pane has quota, keep existing widths.
 
 ```go
-func formatQuotaSuffix(quota *codex.QuotaInfo) string
+if m.hasCodexQuota() {
+    targetStatus := 32
+    if width >= 110 {
+        targetStatus = 36
+    }
+    for statusWidth < targetStatus && cwdWidth > 12 {
+        statusWidth++
+        cwdWidth--
+    }
+}
 ```
 
-Returns `" · 73% (2h10m)"`. Quota coloring uses percentage-based styles (green/yellow/red) applied independently from the status style. In `renderPaneRow`, the status cell is rendered as two styled segments: `statusStyle.Render(statusText) + quotaStyle.Render(quotaSuffix)`.
+#### Status cell rendering: width-aware helper
+
+The current `renderPaneRow` builds status as a fixed-width plain-text cell, then applies a single style. Quota requires two independently-colored segments within the same cell. A new helper handles both unselected and selected paths:
+
+```go
+// renderStatusCell renders a fixed-width status cell with optional quota suffix.
+// It handles both unselected and selected rendering paths.
+//   - unselected: statusStyle + quotaStyle within the cell width
+//   - selected:   selectedStatusStyle + selectedQuotaStyle within the cell width
+func renderStatusCell(statusText string, statusStyle lipgloss.Style,
+    quotaSuffix string, quotaStyle lipgloss.Style,
+    selected bool, cellWidth int) string
+```
+
+Logic:
+1. Build the combined plain text: `statusText + quotaSuffix`
+2. Truncate combined text to `cellWidth` using `lipgloss.Width` (ANSI-aware)
+3. For unselected: render as `statusStyle.Width(cellWidth).Render(statusText) + quotaStyle.Render(quotaSuffix)`, padded to `cellWidth`
+4. For selected: same structure but both styles wrapped with `withSelectedBg()` to get the purple highlight, preserving foreground colors
+
+The helper replaces the current inline status cell logic in `renderPaneRow`:
+
+```go
+// Before:
+statusCell := fmt.Sprintf("%-*s", statusWidth, statusText)
+// ...
+statusCell = statusStyle.Render(statusCell)
+
+// After:
+statusCell := renderStatusCell(statusText, statusStyle,
+    quotaSuffix, quotaStyle, false, statusWidth)
+```
+
+And for selected rows:
+```go
+// Before:
+selectedStatus := tui.RenderSelectedStatusCell(statusStyle, statusCell)
+
+// After:
+statusCell := renderStatusCell(statusText, statusStyle,
+    quotaSuffix, quotaStyle, true, statusWidth)
+```
+
+#### Quota suffix builder
+
+```go
+func formatQuotaSuffix(quota *codex.QuotaInfo, maxChars int) (text string, style lipgloss.Style)
+```
+
+Returns `" · 73% (2h10m)"` and the corresponding percentage-based style. If `maxChars` is insufficient for primary+secondary, drops secondary. If insufficient for primary, returns empty string (graceful degradation — no quota shown).
 
 Display rules:
 
