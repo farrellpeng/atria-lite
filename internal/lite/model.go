@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sethdeckard/atria/internal/codex"
 	"github.com/sethdeckard/atria/internal/model"
 	"github.com/sethdeckard/atria/internal/terminal"
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
@@ -52,6 +53,9 @@ type Model struct {
 	spinnerTickActive bool
 
 	missingPaneGrace map[int]int
+
+	codexClient *codex.Client   // nil if codex binary not found
+	codexQuota  *codex.QuotaInfo // global account-level quota cache
 }
 
 func NewModel(client windowPaneClient, ctx MonitorContext) Model {
@@ -65,6 +69,7 @@ func NewModel(client windowPaneClient, ctx MonitorContext) Model {
 		mode:             ModeList,
 		bindings:         bindings,
 		missingPaneGrace: make(map[int]int),
+		codexClient:      codex.NewClient(),
 	}
 }
 
@@ -102,16 +107,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusText = m.modeStatusText()
 		if autoloadedPane != nil {
 			if cmd := syncWorkspaceBindings(m.client, m.ctx, m.ctx.WorkspacePaneIDs, nextBindings, fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))); cmd != nil {
-				return m, tea.Batch(cmd, refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick())
+				return m, tea.Batch(cmd, refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick(), m.ensureQuotaTick())
 			}
 			m.applyBindings(nextBindings)
 			m.statusText = fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))
 		} else if recoverWorkspace != nil {
 			if cmd := syncWorkspaceBindings(m.client, m.ctx, recoverWorkspace, nextBindings, "Restoring workspace"); cmd != nil {
-				return m, tea.Batch(cmd, refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick())
+				return m, tea.Batch(cmd, refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick(), m.ensureQuotaTick())
 			}
 		}
-		return m, tea.Batch(refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick())
+		return m, tea.Batch(refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick(), m.ensureQuotaTick())
 	case windowPanesLoadFailedMsg:
 		m.statusText = fmt.Sprintf("Refresh failed: %v", msg.err)
 		return m, refreshTickCmd()
@@ -127,7 +132,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.panes = msg.panes
 		m.syncReplacePrompt()
 		m.clampCursor()
-		return m, tea.Batch(m.ensureStatusTick(), m.ensureSpinnerTick())
+		return m, tea.Batch(m.ensureStatusTick(), m.ensureSpinnerTick(), m.ensureQuotaTick())
 	case paneStatusesLoadFailedMsg:
 		return m, m.ensureStatusTick()
 	case spinnerTickMsg:
@@ -148,6 +153,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusText = fmt.Sprintf("Action failed: %v", msg.err)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case codexQuotaTickMsg:
+		if m.codexClient != nil && m.codexClient.Available() && m.hasCodexPanes() {
+			return m, fetchCodexQuota(m.codexClient)
+		}
+		return m, nil
+	case codexQuotaMsg:
+		if msg.quota != nil {
+			m.codexQuota = msg.quota
+		}
+		if m.hasCodexPanes() {
+			return m, quotaTickCmd()
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -636,4 +654,27 @@ func isAllowedReplaceSlot(slots []SlotID, target SlotID) bool {
 		}
 	}
 	return false
+}
+
+func (m Model) hasCodexPanes() bool {
+	for _, pane := range m.panes {
+		if pane.Kind == OccupantAgent && pane.AgentType == model.AgentCodex {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) ensureQuotaTick() tea.Cmd {
+	if m.codexClient == nil || !m.codexClient.Available() {
+		return nil
+	}
+	if !m.hasCodexPanes() || m.codexQuota != nil {
+		return nil
+	}
+	return fetchCodexQuota(m.codexClient)
+}
+
+func (m Model) hasCodexQuota() bool {
+	return m.codexQuota != nil
 }

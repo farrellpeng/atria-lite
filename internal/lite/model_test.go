@@ -286,7 +286,7 @@ func TestInitSchedulesStatusAndSpinnerTicksForWorkingAgent(t *testing.T) {
 	m = updated.(Model)
 
 	msgs := runCmds(t, cmd)
-	assertMsgTypes(t, msgs, refreshTickMsg{}, statusTickMsg{}, spinnerTickMsg{})
+	assertMsgTypes(t, msgs, refreshTickMsg{}, statusTickMsg{}, spinnerTickMsg{}, codexQuotaMsg{})
 	if !m.statusTickActive {
 		t.Fatal("statusTickActive = false, want true after scheduling status polling")
 	}
@@ -339,7 +339,7 @@ func TestStatusTickRefreshesStatusesAndReschedulesStatusTick(t *testing.T) {
 		t.Fatalf("pane status = %q, want working", got.panes[0].Status)
 	}
 	msgs := runCmds(t, next)
-	assertMsgTypes(t, msgs, statusTickMsg{}, spinnerTickMsg{})
+	assertMsgTypes(t, msgs, statusTickMsg{}, spinnerTickMsg{}, codexQuotaMsg{})
 }
 
 func TestSpinnerTickAdvancesWhileWorking(t *testing.T) {
