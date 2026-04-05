@@ -26,6 +26,7 @@ type PaneInfo struct {
 	Workspace string
 	Title     string
 	CWD       string
+	Cols      int
 	TTYName   string
 	IsSelf    bool
 	// IsActive is kept as a compatibility alias for IsSelf.
@@ -35,12 +36,13 @@ type PaneInfo struct {
 
 // SplitPaneOptions controls how SplitPane arranges a new pane.
 type SplitPaneOptions struct {
-	PaneID    int
-	Direction string // "top", "right", "bottom", "left"
-	TopLevel  bool
-	Percent   int
-	CWD       string
-	Command   []string
+	PaneID     int
+	Direction  string // "top", "right", "bottom", "left"
+	TopLevel   bool
+	Percent    int
+	CWD        string
+	MovePaneID int
+	Command    []string
 }
 
 // NewClient creates a new WezTerm Client. Empty weztermPath defaults to "wezterm".
@@ -73,7 +75,10 @@ type listEntry struct {
 	Workspace string `json:"workspace"`
 	Title     string `json:"title"`
 	CWD       string `json:"cwd"`
-	TTYName   string `json:"tty_name"`
+	Size      struct {
+		Cols int `json:"cols"`
+	} `json:"size"`
+	TTYName string `json:"tty_name"`
 }
 
 func (e listEntry) toPaneInfo(selfPaneID int) PaneInfo {
@@ -85,6 +90,7 @@ func (e listEntry) toPaneInfo(selfPaneID int) PaneInfo {
 		Workspace: e.Workspace,
 		Title:     e.Title,
 		CWD:       normalizeCWD(e.CWD),
+		Cols:      e.Size.Cols,
 		TTYName:   e.TTYName,
 		IsSelf:    isSelf,
 		IsActive:  isSelf,
@@ -234,6 +240,20 @@ func (c *Client) FocusSession(sessionID string) error {
 	return err
 }
 
+// ActivatePane activates the WezTerm pane with the given ID.
+func (c *Client) ActivatePane(sessionID string) error {
+	return c.FocusSession(sessionID)
+}
+
+// ActivateTab activates the WezTerm tab with the given ID.
+func (c *Client) ActivateTab(tabID int) error {
+	if tabID <= 0 {
+		return fmt.Errorf("tabID must be positive")
+	}
+	_, err := c.run("activate-tab", "--tab-id", strconv.Itoa(tabID))
+	return err
+}
+
 // SplitPane creates a new pane with the requested layout.
 func (c *Client) SplitPane(opts SplitPaneOptions) (int, error) {
 	if opts.Percent < 0 || opts.Percent > 100 {
@@ -265,6 +285,9 @@ func (c *Client) SplitPane(opts SplitPaneOptions) (int, error) {
 	if opts.CWD != "" {
 		args = append(args, "--cwd", opts.CWD)
 	}
+	if opts.MovePaneID > 0 {
+		args = append(args, "--move-pane-id", strconv.Itoa(opts.MovePaneID))
+	}
 	if len(opts.Command) > 0 {
 		args = append(args, "--")
 		args = append(args, opts.Command...)
@@ -282,13 +305,38 @@ func (c *Client) SplitPane(opts SplitPaneOptions) (int, error) {
 
 // MovePaneToNewTab moves a pane to a new tab in the specified window.
 func (c *Client) MovePaneToNewTab(paneID, windowID int) error {
+	if paneID < 0 {
+		return fmt.Errorf("paneID must be non-negative")
+	}
+	if windowID < 0 {
+		return fmt.Errorf("windowID must be non-negative")
+	}
+
+	args := []string{"move-pane-to-new-tab"}
+	if paneID > 0 {
+		args = append(args, "--pane-id", strconv.Itoa(paneID))
+	}
+	if windowID > 0 {
+		args = append(args, "--window-id", strconv.Itoa(windowID))
+	}
+	_, err := c.run(args...)
+	return err
+}
+
+// AdjustPaneSize resizes a pane toward the given direction.
+func (c *Client) AdjustPaneSize(paneID int, direction string, amount int) error {
 	if paneID <= 0 {
 		return fmt.Errorf("paneID must be positive")
 	}
-	if windowID <= 0 {
-		return fmt.Errorf("windowID must be positive")
+	if amount <= 0 {
+		return fmt.Errorf("amount must be positive")
 	}
-	_, err := c.run("move-pane-to-new-tab", "--pane-id", strconv.Itoa(paneID), "--window-id", strconv.Itoa(windowID))
+	switch direction {
+	case "Left", "Right", "Up", "Down", "Next", "Prev":
+	default:
+		return fmt.Errorf("unsupported direction: %s", direction)
+	}
+	_, err := c.run("adjust-pane-size", "--pane-id", strconv.Itoa(paneID), "--amount", strconv.Itoa(amount), direction)
 	return err
 }
 

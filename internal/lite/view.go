@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/sethdeckard/atria/internal/tui"
 )
 
@@ -13,14 +12,14 @@ func (m Model) View() string {
 
 	switch m.mode {
 	case ModeReplacePrompt:
-		sections = append(sections, m.renderPanel(m.viewReplacePrompt()))
+		sections = append(sections, strings.Join(m.viewReplacePrompt(), "\n"))
 	case ModeNormalPanePicker:
-		sections = append(sections, m.renderPanel(m.viewNormalPanePicker()))
+		sections = append(sections, strings.Join(m.viewNormalPanePicker(), "\n"))
 	default:
-		sections = append(sections, m.renderPanel(m.viewAgentList()))
+		sections = append(sections, strings.Join(m.viewAgentList(), "\n"))
 	}
 
-	sections = append(sections, m.renderPanel(m.viewSlotSummary()))
+	sections = append(sections, strings.Join(m.viewSlotSummary(), "\n"))
 	sections = append(sections, m.viewFooter())
 
 	return strings.Join(sections, "\n\n")
@@ -38,25 +37,20 @@ func (m Model) viewAgentList() []string {
 		if slot, ok := m.slotForPane(pane.PaneID); ok {
 			binding = string(slot)
 		}
-		line := m.renderPaneRow(paneLabel(pane), paneTypeLabel(pane), binding, pane.CWD)
-		if i == m.cursor {
-			lines = append(lines, tui.RenderSelectedText(line))
-			continue
-		}
-		lines = append(lines, line)
+		lines = append(lines, m.renderPaneRow(pane, binding, i == m.cursor))
 	}
 	return lines
 }
 
 func (m Model) viewReplacePrompt() []string {
 	lines := []string{
-		tui.RenderDim("replace"),
-		padLiteLine(fmt.Sprintf("All 3 slots are full. %s would require a replacement.", paneLabel(m.replacePane)), m.contentWidth()),
+		tui.RenderDim("  replace"),
+		"  " + fmt.Sprintf("All 3 slots are full. %s would require a replacement.", paneLabel(m.replacePane)),
 	}
 	for _, slot := range allowedReplaceSlots(m.bindings, m.replacePane) {
-		lines = append(lines, padLiteLine(fmt.Sprintf("Press %s to replace %s.", strings.TrimPrefix(string(slot), "slot"), slot), m.contentWidth()))
+		lines = append(lines, "  "+fmt.Sprintf("Press %s to replace %s.", strings.TrimPrefix(string(slot), "slot"), slot))
 	}
-	lines = append(lines, padLiteLine("Press esc to go back.", m.contentWidth()))
+	lines = append(lines, "  Press esc to go back.")
 	return lines
 }
 
@@ -68,12 +62,7 @@ func (m Model) viewNormalPanePicker() []string {
 	}
 
 	for i, pane := range normals {
-		line := m.renderPaneRow(paneLabel(pane), paneTypeLabel(pane), "unbound", pane.CWD)
-		if i == m.cursor {
-			lines = append(lines, tui.RenderSelectedText(line))
-			continue
-		}
-		lines = append(lines, line)
+		lines = append(lines, m.renderPaneRow(pane, "unbound", i == m.cursor))
 	}
 	return lines
 }
@@ -82,10 +71,10 @@ func (m Model) viewSlotSummary() []string {
 	lines := []string{tui.RenderDim("slots")}
 	for _, slot := range slotOrder {
 		if binding, ok := m.bindingForSlot(slot); ok {
-			lines = append(lines, tui.RenderDim(padLiteLine(fmt.Sprintf("%-5s pane %-4d %s", slot, binding.PaneID, binding.Kind), m.contentWidth())))
+			lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s pane %-4d %s", slot, binding.PaneID, binding.Kind)))
 			continue
 		}
-		lines = append(lines, tui.RenderDim(padLiteLine(fmt.Sprintf("%-5s empty", slot), m.contentWidth())))
+		lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s empty", slot)))
 	}
 	return lines
 }
@@ -132,18 +121,22 @@ func (m Model) renderWidth() int {
 func (m Model) renderColumnHeaders() string {
 	paneWidth, typeWidth, bindingWidth, cwdWidth := m.columnWidths()
 	line := fmt.Sprintf(
-		"%-*s%-*s%-*s%s",
+		"  %-*s%-*s%-*s%s",
 		paneWidth, "pane",
 		typeWidth, "type",
 		bindingWidth, "binding",
 		"cwd",
 	)
-	maxWidth := paneWidth + typeWidth + bindingWidth + cwdWidth
+	maxWidth := 2 + paneWidth + typeWidth + bindingWidth + cwdWidth
 	return tui.RenderDim(tui.TruncateToWidth(line, maxWidth))
 }
 
-func (m Model) renderPaneRow(name, kind, binding, cwd string) string {
+func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) string {
 	paneWidth, typeWidth, bindingWidth, cwdWidth := m.columnWidths()
+	name := paneLabel(pane)
+	kind := paneTypeLabel(pane)
+	cwd := pane.CWD
+
 	name = tui.TruncateToWidth(name, paneWidth-1)
 	kind = tui.TruncateToWidth(kind, typeWidth-1)
 	binding = tui.TruncateToWidth(binding, bindingWidth-1)
@@ -151,55 +144,61 @@ func (m Model) renderPaneRow(name, kind, binding, cwd string) string {
 		cwd = tui.TruncateToWidth(cwd, cwdWidth)
 	}
 
-	line := fmt.Sprintf(
-		"%-*s%-*s%-*s%s",
-		paneWidth, name,
-		typeWidth, kind,
-		bindingWidth, binding,
-		cwd,
-	)
-	return padLiteLine(line, m.contentWidth())
+	nameCell := fmt.Sprintf("  %-*s", paneWidth, name)
+	typeCell := fmt.Sprintf("%-*s", typeWidth, kind)
+	bindingCell := fmt.Sprintf("%-*s", bindingWidth, binding)
+	cwdCell := cwd
+
+	if selected {
+		typeStyled := tui.RenderSelectedText(typeCell)
+		if pane.Kind == OccupantAgent && pane.AgentType != "" {
+			typeStyled = tui.RenderSelectedAgentTypeCell(pane.AgentType, typeCell)
+		}
+		return tui.RenderSelectedText(nameCell) +
+			typeStyled +
+			tui.RenderSelectedText(bindingCell) +
+			tui.RenderSelectedText(cwdCell)
+	}
+
+	typeStyled := typeCell
+	if pane.Kind == OccupantAgent && pane.AgentType != "" {
+		typeStyled = tui.RenderAgentTypeCell(pane.AgentType, typeCell)
+	} else {
+		typeStyled = tui.RenderDim(typeCell)
+	}
+
+	if cwdCell != "" {
+		cwdCell = tui.RenderDim(cwdCell)
+	}
+	return nameCell + typeStyled + bindingCell + cwdCell
 }
 
 func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, cwdWidth int) {
-	width := m.contentWidth()
+	width := m.renderWidth()
 	paneWidth = 20
-	typeWidth = 10
+	typeWidth = 12
 	bindingWidth = 11
-	cwdWidth = width - paneWidth - typeWidth - bindingWidth
+	cwdWidth = width - 2 - paneWidth - typeWidth - bindingWidth
 	if cwdWidth < 12 {
 		cwdWidth = 12
 	}
 	return paneWidth, typeWidth, bindingWidth, cwdWidth
 }
 
-func (m Model) contentWidth() int {
-	width := m.renderWidth() - 4
-	if width < 24 {
-		return 24
-	}
-	return width
-}
-
 func paneTypeLabel(pane CandidatePane) string {
 	if pane.Kind == OccupantAgent && pane.AgentType != "" {
-		return string(pane.AgentType)
+		switch pane.AgentType {
+		case "claude":
+			return "Claude"
+		case "codex":
+			return "Codex"
+		case "opencode":
+			return "OpenCode"
+		case "copilot":
+			return "Copilot"
+		default:
+			return string(pane.AgentType)
+		}
 	}
-	return string(pane.Kind)
-}
-
-func padLiteLine(line string, width int) string {
-	if pad := width - lipgloss.Width(line); pad > 0 {
-		return line + strings.Repeat(" ", pad)
-	}
-	return line
-}
-
-func (m Model) renderPanel(lines []string) string {
-	return lipgloss.NewStyle().
-		Width(m.contentWidth()).
-		Padding(0, 1).
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.AdaptiveColor{Light: "#aaaaaa", Dark: "#888888"}).
-		Render(strings.Join(lines, "\n"))
+	return "Normal"
 }

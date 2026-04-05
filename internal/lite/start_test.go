@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
 )
@@ -40,8 +41,8 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 				{PaneID: 202, WindowID: 700, TabID: 701, Title: "notes"},
 			},
 			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
 				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
-				{PaneID: 202, WindowID: 700, TabID: 701, Title: "notes"},
 			},
 		},
 		splitPaneID: 999,
@@ -53,16 +54,30 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 	}
 
 	wantMoves := []movePaneCall{
-		{PaneID: 101, WindowID: 700},
+		{PaneID: 202, WindowID: 700},
 	}
 	if !reflect.DeepEqual(runtime.moveCalls, wantMoves) {
 		t.Fatalf("MovePaneToNewTab() calls = %#v, want %#v", runtime.moveCalls, wantMoves)
 	}
-	if len(runtime.splitCalls) != 1 {
-		t.Fatalf("SplitPane() call count = %d, want 1", len(runtime.splitCalls))
+	if len(runtime.splitCalls) != 2 {
+		t.Fatalf("SplitPane() call count = %d, want 2", len(runtime.splitCalls))
 	}
 
-	got := runtime.splitCalls[0]
+	workspaceSplit := runtime.splitCalls[0]
+	if workspaceSplit.PaneID != 201 {
+		t.Fatalf("workspace SplitPane() PaneID = %d, want 201", workspaceSplit.PaneID)
+	}
+	if workspaceSplit.Direction != "right" {
+		t.Fatalf("workspace SplitPane() Direction = %q, want %q", workspaceSplit.Direction, "right")
+	}
+	if workspaceSplit.Percent != 50 {
+		t.Fatalf("workspace SplitPane() Percent = %d, want 50", workspaceSplit.Percent)
+	}
+	if workspaceSplit.MovePaneID != 101 {
+		t.Fatalf("workspace SplitPane() MovePaneID = %d, want 101", workspaceSplit.MovePaneID)
+	}
+
+	got := runtime.splitCalls[1]
 	if got.PaneID != 201 {
 		t.Fatalf("SplitPane() PaneID = %d, want 201", got.PaneID)
 	}
@@ -93,13 +108,13 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 
 	wantBindings := []SlotBinding{
 		{Slot: Slot1, PaneID: 201, Kind: OccupantAgent},
-		{Slot: Slot2, PaneID: 202, Kind: OccupantNormal},
+		{Slot: Slot2, PaneID: 101, Kind: OccupantNormal},
 	}
 	if !reflect.DeepEqual(ctx.SlotBindings, wantBindings) {
 		t.Fatalf("SlotBindings = %#v, want %#v", ctx.SlotBindings, wantBindings)
 	}
-	if !reflect.DeepEqual(ctx.WorkspacePaneIDs, []int{201, 202}) {
-		t.Fatalf("WorkspacePaneIDs = %v, want [201 202]", ctx.WorkspacePaneIDs)
+	if !reflect.DeepEqual(ctx.WorkspacePaneIDs, []int{201, 101}) {
+		t.Fatalf("WorkspacePaneIDs = %v, want [201 101]", ctx.WorkspacePaneIDs)
 	}
 	if ctx.StarterPaneID != 101 {
 		t.Fatalf("StarterPaneID = %d, want 101", ctx.StarterPaneID)
@@ -140,14 +155,19 @@ func TestStartMovesOverflowPanesToNewTabInSameWindow(t *testing.T) {
 				{PaneID: 205, WindowID: 700, TabID: 703, Title: "shell"},
 			},
 			{
-				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
+				{PaneID: 202, WindowID: 700, TabID: 701, Title: "codex"},
+				{PaneID: 203, WindowID: 700, TabID: 701, Title: "opencode"},
+				{PaneID: 204, WindowID: 700, TabID: 702, Title: "notes"},
+				{PaneID: 205, WindowID: 700, TabID: 703, Title: "shell"},
+			},
+			{
 				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
 				{PaneID: 202, WindowID: 700, TabID: 701, Title: "codex"},
 				{PaneID: 203, WindowID: 700, TabID: 701, Title: "opencode"},
 				{PaneID: 205, WindowID: 700, TabID: 703, Title: "shell"},
 			},
 			{
-				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
 				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
 				{PaneID: 202, WindowID: 700, TabID: 701, Title: "codex"},
 				{PaneID: 203, WindowID: 700, TabID: 701, Title: "opencode"},
@@ -167,21 +187,88 @@ func TestStartMovesOverflowPanesToNewTabInSameWindow(t *testing.T) {
 	}
 
 	wantMoves := []movePaneCall{
+		{PaneID: 101, WindowID: 700},
 		{PaneID: 204, WindowID: 700},
 		{PaneID: 205, WindowID: 700},
-		{PaneID: 101, WindowID: 700},
 	}
 	if !reflect.DeepEqual(runtime.moveCalls, wantMoves) {
 		t.Fatalf("MovePaneToNewTab() calls = %#v, want %#v", runtime.moveCalls, wantMoves)
 	}
-	if len(runtime.splitCalls) != 1 {
-		t.Fatalf("SplitPane() call count = %d, want 1", len(runtime.splitCalls))
+	if len(runtime.splitCalls) != 3 {
+		t.Fatalf("SplitPane() call count = %d, want 3", len(runtime.splitCalls))
 	}
-	if runtime.splitCalls[0].PaneID != 201 {
-		t.Fatalf("SplitPane() PaneID = %d, want 201", runtime.splitCalls[0].PaneID)
+	wantWorkspaceSplits := []wezterm.SplitPaneOptions{
+		{PaneID: 201, Direction: "right", Percent: 67, MovePaneID: 202},
+		{PaneID: 202, Direction: "right", Percent: 50, MovePaneID: 203},
+	}
+	if !reflect.DeepEqual(runtime.splitCalls[:2], wantWorkspaceSplits) {
+		t.Fatalf("workspace SplitPane() calls = %#v, want %#v", runtime.splitCalls[:2], wantWorkspaceSplits)
+	}
+	if runtime.splitCalls[2].PaneID != 201 {
+		t.Fatalf("monitor SplitPane() PaneID = %d, want 201", runtime.splitCalls[2].PaneID)
 	}
 	if len(runtime.activateCalls) != 1 || runtime.activateCalls[0] != "999" {
 		t.Fatalf("ActivatePane() calls = %v, want [999]", runtime.activateCalls)
+	}
+}
+
+func TestStartKeepsStarterPaneWhenItIsPartOfWorkspace(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "101")
+
+	runtime := &mockStartRuntime{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+		},
+		windowPanes: [][]wezterm.PaneInfo{
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 702, Title: "claude code"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 702, Title: "claude code"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 702, Title: "claude code"},
+			},
+		},
+		splitPaneID: 999,
+	}
+	installMockStartRuntime(t, runtime)
+
+	if err := Start(StartOptions{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if len(runtime.moveCalls) != 0 {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want none when starter stays in workspace", runtime.moveCalls)
+	}
+	if len(runtime.splitCalls) != 2 {
+		t.Fatalf("SplitPane() call count = %d, want 2", len(runtime.splitCalls))
+	}
+	wantWorkspaceSplit := wezterm.SplitPaneOptions{
+		PaneID:     201,
+		Direction:  "right",
+		Percent:    50,
+		MovePaneID: 101,
+	}
+	if !reflect.DeepEqual(runtime.splitCalls[0], wantWorkspaceSplit) {
+		t.Fatalf("workspace SplitPane() call = %#v, want %#v", runtime.splitCalls[0], wantWorkspaceSplit)
+	}
+	if runtime.splitCalls[1].PaneID != 201 || runtime.splitCalls[1].Direction != "top" || !runtime.splitCalls[1].TopLevel {
+		t.Fatalf("monitor SplitPane() call = %#v, want top-level split from pane 201", runtime.splitCalls[1])
+	}
+	ctx, err := DecodeMonitorContext(runtime.splitCalls[1].Command[3])
+	if err != nil {
+		t.Fatalf("DecodeMonitorContext() error = %v", err)
+	}
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 201, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 101, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(ctx.SlotBindings, wantBindings) {
+		t.Fatalf("SlotBindings = %#v, want %#v", ctx.SlotBindings, wantBindings)
 	}
 }
 
@@ -251,9 +338,9 @@ func TestStartUsesScreenFallbackToDetectAgents(t *testing.T) {
 				{PaneID: 203, WindowID: 700, TabID: 701, Title: "notes"},
 			},
 			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
 				{PaneID: 201, WindowID: 700, TabID: 701, Title: "shell"},
 				{PaneID: 202, WindowID: 700, TabID: 701, Title: "shell"},
-				{PaneID: 203, WindowID: 700, TabID: 701, Title: "notes"},
 			},
 		},
 		readScreens: map[int]string{
@@ -268,13 +355,20 @@ func TestStartUsesScreenFallbackToDetectAgents(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	if len(runtime.splitCalls) != 1 {
-		t.Fatalf("SplitPane() call count = %d, want 1", len(runtime.splitCalls))
+	if len(runtime.splitCalls) != 3 {
+		t.Fatalf("SplitPane() call count = %d, want 3", len(runtime.splitCalls))
 	}
-	if runtime.splitCalls[0].PaneID != 201 {
-		t.Fatalf("SplitPane() PaneID = %d, want 201", runtime.splitCalls[0].PaneID)
+	wantWorkspaceSplits := []wezterm.SplitPaneOptions{
+		{PaneID: 201, Direction: "right", Percent: 67, MovePaneID: 202},
+		{PaneID: 202, Direction: "right", Percent: 50, MovePaneID: 101},
 	}
-	ctx, err := DecodeMonitorContext(runtime.splitCalls[0].Command[3])
+	if !reflect.DeepEqual(runtime.splitCalls[:2], wantWorkspaceSplits) {
+		t.Fatalf("workspace SplitPane() calls = %#v, want %#v", runtime.splitCalls[:2], wantWorkspaceSplits)
+	}
+	if runtime.splitCalls[2].PaneID != 201 {
+		t.Fatalf("monitor SplitPane() PaneID = %d, want 201", runtime.splitCalls[2].PaneID)
+	}
+	ctx, err := DecodeMonitorContext(runtime.splitCalls[2].Command[3])
 	if err != nil {
 		t.Fatalf("DecodeMonitorContext() error = %v", err)
 	}
@@ -282,13 +376,61 @@ func TestStartUsesScreenFallbackToDetectAgents(t *testing.T) {
 	wantBindings := []SlotBinding{
 		{Slot: Slot1, PaneID: 201, Kind: OccupantAgent},
 		{Slot: Slot2, PaneID: 202, Kind: OccupantAgent},
-		{Slot: Slot3, PaneID: 203, Kind: OccupantNormal},
+		{Slot: Slot3, PaneID: 101, Kind: OccupantNormal},
 	}
 	if !reflect.DeepEqual(ctx.SlotBindings, wantBindings) {
 		t.Fatalf("SlotBindings = %#v, want %#v", ctx.SlotBindings, wantBindings)
 	}
-	if !reflect.DeepEqual(runtime.moveCalls, []movePaneCall{{PaneID: 101, WindowID: 700}}) {
-		t.Fatalf("MovePaneToNewTab() calls = %#v, want starter moved only", runtime.moveCalls)
+	if !reflect.DeepEqual(runtime.moveCalls, []movePaneCall{{PaneID: 203, WindowID: 700}}) {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want notes moved only", runtime.moveCalls)
+	}
+}
+
+func TestStartRetriesMonitorActivation(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "101")
+
+	runtime := &mockStartRuntime{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+		},
+		windowPanes: [][]wezterm.PaneInfo{
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
+			},
+			{
+				{PaneID: 201, WindowID: 700, TabID: 701, Title: "claude code"},
+			},
+		},
+		splitPaneID: 999,
+		activateErrs: []error{
+			strconv.ErrSyntax,
+			strconv.ErrRange,
+		},
+	}
+	installMockStartRuntime(t, runtime)
+
+	oldSleep := sleepForActivationRetry
+	sleepForActivationRetry = func(time.Duration) {}
+	t.Cleanup(func() {
+		sleepForActivationRetry = oldSleep
+	})
+
+	if err := Start(StartOptions{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if len(runtime.activateCalls) != 3 {
+		t.Fatalf("ActivatePane() calls = %v, want 3 retries", runtime.activateCalls)
+	}
+	for _, call := range runtime.activateCalls {
+		if call != "999" {
+			t.Fatalf("ActivatePane() call = %q, want 999", call)
+		}
 	}
 }
 
@@ -305,13 +447,22 @@ type mockStartRuntime struct {
 	splitCalls      []wezterm.SplitPaneOptions
 	splitPaneID     int
 	splitErr        error
+	adjustCalls     []adjustPaneCall
+	adjustErr       error
 	activateCalls   []string
+	activateErrs    []error
 	activateErr     error
 }
 
 type movePaneCall struct {
 	PaneID   int
 	WindowID int
+}
+
+type adjustPaneCall struct {
+	PaneID    int
+	Direction string
+	Amount    int
 }
 
 func (m *mockStartRuntime) ListPanes() ([]wezterm.PaneInfo, error) {
@@ -376,9 +527,27 @@ func (m *mockStartRuntime) SplitPane(opts wezterm.SplitPaneOptions) (int, error)
 	return m.splitPaneID, nil
 }
 
+func (m *mockStartRuntime) AdjustPaneSize(paneID int, direction string, amount int) error {
+	m.adjustCalls = append(m.adjustCalls, adjustPaneCall{
+		PaneID:    paneID,
+		Direction: direction,
+		Amount:    amount,
+	})
+	return m.adjustErr
+}
+
 func (m *mockStartRuntime) ActivatePane(sessionID string) error {
 	m.activateCalls = append(m.activateCalls, sessionID)
+	if len(m.activateErrs) > 0 {
+		err := m.activateErrs[0]
+		m.activateErrs = m.activateErrs[1:]
+		return err
+	}
 	return m.activateErr
+}
+
+func (m *mockStartRuntime) ActivateTab(tabID int) error {
+	return nil
 }
 
 func installMockStartRuntime(t *testing.T, runtime *mockStartRuntime) {

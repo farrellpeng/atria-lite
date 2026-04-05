@@ -2,6 +2,8 @@ package lite
 
 import "github.com/sethdeckard/atria/internal/terminal/wezterm"
 
+type refreshTickMsg struct{}
+
 type windowPanesLoadedMsg struct {
 	panes []wezterm.PaneInfo
 }

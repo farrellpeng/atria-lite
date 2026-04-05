@@ -100,10 +100,347 @@ func TestMonitorViewUsesAtriaStyleChromeAndSecondarySlots(t *testing.T) {
 	got := updated.(Model)
 
 	view := got.View()
-	for _, want := range []string{"agents", "atria", "slot1", "enter:load", "n:normal panes", "r:refresh", "│"} {
+	for _, want := range []string{"agents", "atria", "slot1", "enter:load", "n:normal panes", "r:refresh"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() = %q, want to contain %q", view, want)
 		}
+	}
+}
+
+func TestInitSchedulesRefreshAndAutoRefreshTick(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+		},
+	}
+	m := NewModel(client, ctx)
+
+	msg := runCmd(t, m.Init())
+	updated, cmd := m.Update(msg)
+	m = updated.(Model)
+
+	if len(m.panes) != 1 || m.panes[0].PaneID != 11 {
+		t.Fatalf("panes = %#v, want pane 11 loaded", m.panes)
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want scheduled auto-refresh tick")
+	}
+	tickMsg := runCmd(t, cmd)
+	if _, ok := tickMsg.(refreshTickMsg); !ok {
+		t.Fatalf("tick msg = %#v, want refreshTickMsg", tickMsg)
+	}
+}
+
+func TestRefreshTickTriggersWindowRefreshAndReschedulesTick(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+		},
+	}
+	m := NewModel(client, ctx)
+
+	updated, cmd := m.Update(refreshTickMsg{})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd = nil, want refresh command")
+	}
+
+	msg := runCmd(t, cmd)
+	updated, next := m.Update(msg)
+	m = updated.(Model)
+
+	if len(m.panes) != 1 || m.panes[0].PaneID != 11 {
+		t.Fatalf("panes = %#v, want pane 11 after refresh tick", m.panes)
+	}
+	if next == nil {
+		t.Fatal("next cmd = nil, want next auto-refresh tick")
+	}
+	nextMsg := runCmd(t, next)
+	if _, ok := nextMsg.(refreshTickMsg); !ok {
+		t.Fatalf("next tick msg = %#v, want refreshTickMsg", nextMsg)
+	}
+}
+
+func TestMonitorAutoLoadsDiscoveredAgentIntoNextFreeSlot(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		},
+	}
+	m := NewModel(nil, ctx)
+
+	updated, _ := m.Update(windowPanesLoadedMsg{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+			{PaneID: 22, WindowID: 7, TabID: 70, Title: "claude"},
+		},
+	})
+	got := updated.(Model)
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 22, Kind: OccupantAgent},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if !reflect.DeepEqual(got.ctx.SlotBindings, wantBindings) {
+		t.Fatalf("ctx bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.ctx.SlotBindings)
+	}
+	if got.mode != ModeList {
+		t.Fatalf("mode = %v, want %v", got.mode, ModeList)
+	}
+}
+
+func TestMonitorRefreshDoesNotAutoReplaceWhenSlotsAreFull(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+			{Slot: Slot2, PaneID: 12, Kind: OccupantAgent},
+			{Slot: Slot3, PaneID: 13, Kind: OccupantAgent},
+		},
+	}
+	m := NewModel(nil, ctx)
+
+	updated, _ := m.Update(windowPanesLoadedMsg{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "claude"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "opencode"},
+			{PaneID: 99, WindowID: 7, TabID: 70, Title: "claude"},
+		},
+	})
+	got := updated.(Model)
+
+	if !reflect.DeepEqual(got.bindings, ctx.SlotBindings) {
+		t.Fatalf("bindings changed on full auto-refresh\nwant: %#v\ngot:  %#v", ctx.SlotBindings, got.bindings)
+	}
+	if got.mode != ModeList {
+		t.Fatalf("mode = %v, want %v", got.mode, ModeList)
+	}
+	if got.replacePane != (CandidatePane{}) {
+		t.Fatalf("replacePane = %#v, want empty on passive refresh", got.replacePane)
+	}
+}
+
+func TestMonitorAutoLoadMovesNewTabPaneIntoWorkspaceSlot(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:       200,
+		StarterPaneID:    100,
+		WindowID:         7,
+		TabID:            70,
+		SlotBindings:     []SlotBinding{{Slot: Slot1, PaneID: 11, Kind: OccupantAgent}},
+		WorkspacePaneIDs: []int{11},
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+			{PaneID: 22, WindowID: 7, TabID: 71, Title: "claude"},
+		},
+	}
+	m := NewModel(client, ctx)
+
+	updated, cmd := m.Update(windowPanesLoadedMsg{panes: client.panes})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd = nil, want workspace materialization command")
+	}
+
+	msg := runCmd(t, cmd)
+	updated, redraw := m.Update(msg)
+	got := updated.(Model)
+	if redraw == nil {
+		t.Fatal("redraw cmd = nil, want forced UI redraw after workspace changes")
+	}
+
+	if len(client.splitPaneCalls) != 1 {
+		t.Fatalf("SplitPane() calls = %#v, want 1", client.splitPaneCalls)
+	}
+	wantCall := wezterm.SplitPaneOptions{
+		PaneID:     11,
+		Direction:  "right",
+		Percent:    50,
+		MovePaneID: 22,
+	}
+	if !reflect.DeepEqual(client.splitPaneCalls[0], wantCall) {
+		t.Fatalf("SplitPane() call = %#v, want %#v", client.splitPaneCalls[0], wantCall)
+	}
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 22, Kind: OccupantAgent},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if !reflect.DeepEqual(got.ctx.WorkspacePaneIDs, []int{11, 22}) {
+		t.Fatalf("workspace pane ids = %v, want [11 22]", got.ctx.WorkspacePaneIDs)
+	}
+	if !reflect.DeepEqual(client.activateTabCalls, []int{70, 70}) {
+		t.Fatalf("ActivateTab() calls = %#v, want current tab restored before and after move", client.activateTabCalls)
+	}
+	if !reflect.DeepEqual(client.activatePaneCalls, []string{"200", "200"}) {
+		t.Fatalf("ActivatePane() calls = %#v, want monitor pane focused before and after move", client.activatePaneCalls)
+	}
+}
+
+func TestMonitorBootstrapsStarterPaneIntoWorkspaceBeforeAutoLoad(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 100, WindowID: 7, TabID: 70, Title: "shell"},
+			{PaneID: 22, WindowID: 7, TabID: 71, Title: "claude"},
+		},
+	}
+	m := NewModel(client, ctx)
+
+	updated, cmd := m.Update(windowPanesLoadedMsg{panes: client.panes})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd = nil, want workspace materialization command")
+	}
+
+	msg := runCmd(t, cmd)
+	updated, _ = m.Update(msg)
+	got := updated.(Model)
+
+	if len(client.splitPaneCalls) != 1 {
+		t.Fatalf("SplitPane() calls = %#v, want 1", client.splitPaneCalls)
+	}
+	wantCall := wezterm.SplitPaneOptions{
+		PaneID:     100,
+		Direction:  "left",
+		Percent:    50,
+		MovePaneID: 22,
+	}
+	if !reflect.DeepEqual(client.splitPaneCalls[0], wantCall) {
+		t.Fatalf("SplitPane() call = %#v, want %#v", client.splitPaneCalls[0], wantCall)
+	}
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 22, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 100, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if !reflect.DeepEqual(got.ctx.WorkspacePaneIDs, []int{22, 100}) {
+		t.Fatalf("workspace pane ids = %v, want [22 100]", got.ctx.WorkspacePaneIDs)
+	}
+}
+
+func TestMonitorKeepsRecentlyLoadedPaneDuringTransientMissingRefresh(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:       200,
+		StarterPaneID:    100,
+		WindowID:         7,
+		TabID:            70,
+		SlotBindings:     []SlotBinding{{Slot: Slot1, PaneID: 11, Kind: OccupantAgent}},
+		WorkspacePaneIDs: []int{11},
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+			{PaneID: 22, WindowID: 7, TabID: 71, Title: "claude"},
+		},
+	}
+	m := NewModel(client, ctx)
+
+	updated, cmd := m.Update(windowPanesLoadedMsg{panes: client.panes})
+	m = updated.(Model)
+	msg := runCmd(t, cmd)
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+
+	client.panes = []wezterm.PaneInfo{
+		{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+	}
+
+	updated, retryCmd := m.Update(windowPanesLoadedMsg{panes: client.panes})
+	got := updated.(Model)
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 22, Kind: OccupantAgent},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if retryCmd == nil {
+		t.Fatal("retry cmd = nil, want workspace recovery while moved pane is transiently missing")
+	}
+}
+
+func TestMonitorRestoresBoundPaneThatRemainsOnDifferentTab(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:    200,
+		StarterPaneID: 100,
+		WindowID:      7,
+		TabID:         70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 49, Kind: OccupantAgent},
+			{Slot: Slot2, PaneID: 47, Kind: OccupantAgent},
+		},
+		WorkspacePaneIDs: []int{49, 47},
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 49, WindowID: 7, TabID: 71, Title: "claude"},
+			{PaneID: 47, WindowID: 7, TabID: 70, Title: "codex"},
+		},
+	}
+	m := NewModel(client, ctx)
+
+	updated, cmd := m.Update(windowPanesLoadedMsg{panes: client.panes})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd = nil, want workspace recovery when a bound pane remains on another tab")
+	}
+
+	msg := runCmd(t, cmd)
+	updated, _ = m.Update(msg)
+	got := updated.(Model)
+
+	wantSplit := wezterm.SplitPaneOptions{
+		PaneID:     47,
+		Direction:  "left",
+		Percent:    50,
+		MovePaneID: 49,
+	}
+	if len(client.splitPaneCalls) == 0 || !reflect.DeepEqual(client.splitPaneCalls[0], wantSplit) {
+		t.Fatalf("SplitPane() calls = %#v, want first recovery split %#v", client.splitPaneCalls, wantSplit)
+	}
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 49, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 47, Kind: OccupantAgent},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
 	}
 }
 
@@ -350,7 +687,7 @@ func TestMonitorShowsReplacePromptWhenThreeSlotsFull(t *testing.T) {
 	if !strings.Contains(view, "Replace") {
 		t.Fatalf("View() = %q, want replace prompt", got.View())
 	}
-	for _, want := range []string{"atria", "esc:back", "r:refresh", "│"} {
+	for _, want := range []string{"atria", "esc:back", "r:refresh"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() = %q, want to contain %q", view, want)
 		}
@@ -395,7 +732,7 @@ func TestMonitorShowsNormalPanePickerOnlyForNonAgents(t *testing.T) {
 	if !strings.Contains(view, "shell") {
 		t.Fatalf("View() = %q, want normal pane picker entry", view)
 	}
-	for _, want := range []string{"agents", "atria", "enter:load", "esc:back", "r:refresh", "│"} {
+	for _, want := range []string{"agents", "atria", "enter:load", "esc:back", "r:refresh"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() = %q, want to contain %q", view, want)
 		}
@@ -634,6 +971,34 @@ func keyMsg(key string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
 }
 
+func TestPaneLabelUsesAgentNameForGenericProjectTitle(t *testing.T) {
+	pane := CandidatePane{
+		PaneID:    12,
+		Title:     "atria",
+		CWD:       "/home/farrell/project/atria/",
+		Kind:      OccupantAgent,
+		AgentType: model.AgentCodex,
+	}
+
+	if got, want := paneLabel(pane), "Codex"; got != want {
+		t.Fatalf("paneLabel() = %q, want %q", got, want)
+	}
+}
+
+func TestPaneLabelKeepsNonGenericActivityTitle(t *testing.T) {
+	pane := CandidatePane{
+		PaneID:    14,
+		Title:     "Reviewing slot sync logic",
+		CWD:       "/home/farrell/project/atria/",
+		Kind:      OccupantAgent,
+		AgentType: model.AgentClaude,
+	}
+
+	if got, want := paneLabel(pane), "Reviewing slot sync logic"; got != want {
+		t.Fatalf("paneLabel() = %q, want %q", got, want)
+	}
+}
+
 func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	t.Helper()
 	if cmd == nil {
@@ -643,12 +1008,16 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 }
 
 type stubWindowPaneClient struct {
-	panes           []wezterm.PaneInfo
-	err             error
-	readScreens     map[int]string
-	getVars         map[int]string
-	readScreenCalls []string
-	movePaneCalls   []movePaneCall
+	panes             []wezterm.PaneInfo
+	err               error
+	readScreens       map[int]string
+	getVars           map[int]string
+	readScreenCalls   []string
+	movePaneCalls     []movePaneCall
+	splitPaneCalls    []wezterm.SplitPaneOptions
+	adjustPaneCalls   []adjustPaneCall
+	activateTabCalls  []int
+	activatePaneCalls []string
 }
 
 func (s *stubWindowPaneClient) ListWindowPanes(windowID int) ([]wezterm.PaneInfo, error) {
@@ -688,5 +1057,32 @@ func (s *stubWindowPaneClient) GetVar(sessionID, varName string) (string, error)
 
 func (s *stubWindowPaneClient) MovePaneToNewTab(paneID, windowID int) error {
 	s.movePaneCalls = append(s.movePaneCalls, movePaneCall{PaneID: paneID, WindowID: windowID})
+	return nil
+}
+
+func (s *stubWindowPaneClient) SplitPane(opts wezterm.SplitPaneOptions) (int, error) {
+	s.splitPaneCalls = append(s.splitPaneCalls, opts)
+	if opts.MovePaneID != 0 {
+		return opts.MovePaneID, nil
+	}
+	return 999, nil
+}
+
+func (s *stubWindowPaneClient) AdjustPaneSize(paneID int, direction string, amount int) error {
+	s.adjustPaneCalls = append(s.adjustPaneCalls, adjustPaneCall{
+		PaneID:    paneID,
+		Direction: direction,
+		Amount:    amount,
+	})
+	return nil
+}
+
+func (s *stubWindowPaneClient) ActivateTab(tabID int) error {
+	s.activateTabCalls = append(s.activateTabCalls, tabID)
+	return nil
+}
+
+func (s *stubWindowPaneClient) ActivatePane(sessionID string) error {
+	s.activatePaneCalls = append(s.activatePaneCalls, sessionID)
 	return nil
 }

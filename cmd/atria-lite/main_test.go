@@ -14,12 +14,15 @@ import (
 func TestRunHelpAndMonitorBehavior(t *testing.T) {
 	var monitorCalls []lite.MonitorContext
 	oldRunMonitorUI := runMonitorUI
+	oldRunLiteStart := runLiteStart
 	runMonitorUI = func(ctx lite.MonitorContext) error {
 		monitorCalls = append(monitorCalls, ctx)
 		return nil
 	}
+	runLiteStart = lite.Start
 	t.Cleanup(func() {
 		runMonitorUI = oldRunMonitorUI
+		runLiteStart = oldRunLiteStart
 	})
 
 	validContext, err := lite.EncodeMonitorContext(lite.MonitorContext{
@@ -113,6 +116,52 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 			},
 		},
 		{
+			name: "monitor fills self pane id from env when window id is zero",
+			args: func() []string {
+				zeroWindowContext, err := lite.EncodeMonitorContext(lite.MonitorContext{
+					StarterPaneID: 2,
+					WindowID:      0,
+					TabID:         4,
+				})
+				if err != nil {
+					t.Fatalf("EncodeMonitorContext() zero window error = %v", err)
+				}
+				return []string{"monitor", "--context-base64", zeroWindowContext}
+			}(),
+			selfPaneID: "99",
+			wantCode:   0,
+			wantCalls:  1,
+			wantCtx: &lite.MonitorContext{
+				SelfPaneID:    99,
+				StarterPaneID: 2,
+				WindowID:      0,
+				TabID:         4,
+			},
+		},
+		{
+			name: "monitor fills self pane id from env when starter pane id is zero",
+			args: func() []string {
+				zeroStarterContext, err := lite.EncodeMonitorContext(lite.MonitorContext{
+					StarterPaneID: 0,
+					WindowID:      0,
+					TabID:         4,
+				})
+				if err != nil {
+					t.Fatalf("EncodeMonitorContext() zero starter error = %v", err)
+				}
+				return []string{"monitor", "--context-base64", zeroStarterContext}
+			}(),
+			selfPaneID: "99",
+			wantCode:   0,
+			wantCalls:  1,
+			wantCtx: &lite.MonitorContext{
+				SelfPaneID:    99,
+				StarterPaneID: 0,
+				WindowID:      0,
+				TabID:         4,
+			},
+		},
+		{
 			name:       "monitor invalid context",
 			args:       []string{"monitor", "--context-base64", "e30"},
 			wantCode:   2,
@@ -155,6 +204,45 @@ func TestRunHelpAndMonitorBehavior(t *testing.T) {
 				t.Fatalf("runMonitorUI ctx = %#v, want %#v", monitorCalls[0], *tt.wantCtx)
 			}
 		})
+	}
+}
+
+func TestRunStartUsesCurrentExecutableForMonitorPane(t *testing.T) {
+	var gotOpts []lite.StartOptions
+	oldRunLiteStart := runLiteStart
+	runLiteStart = func(opts lite.StartOptions) error {
+		gotOpts = append(gotOpts, opts)
+		return nil
+	}
+	t.Cleanup(func() {
+		runLiteStart = oldRunLiteStart
+	})
+
+	code, stdout, stderr := captureRun(t, []string{"start"})
+	if code != 0 {
+		t.Fatalf("run() exit code = %d, want 0, stderr=%q", code, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if len(gotOpts) != 1 {
+		t.Fatalf("runLiteStart() calls = %d, want 1", len(gotOpts))
+	}
+	if len(gotOpts[0].MonitorCommand) != 2 {
+		t.Fatalf("MonitorCommand = %v, want 2 args", gotOpts[0].MonitorCommand)
+	}
+	if gotOpts[0].MonitorCommand[1] != "monitor" {
+		t.Fatalf("MonitorCommand[1] = %q, want %q", gotOpts[0].MonitorCommand[1], "monitor")
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable() error = %v", err)
+	}
+	if gotOpts[0].MonitorCommand[0] != exePath {
+		t.Fatalf("MonitorCommand[0] = %q, want %q", gotOpts[0].MonitorCommand[0], exePath)
 	}
 }
 

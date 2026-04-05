@@ -3,6 +3,7 @@ package lite
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sethdeckard/atria/internal/terminal"
@@ -10,6 +11,13 @@ import (
 )
 
 const liteScreenReadLines = 40
+const liteRefreshInterval = 3 * time.Second
+
+func refreshTickCmd() tea.Cmd {
+	return tea.Tick(liteRefreshInterval, func(time.Time) tea.Msg {
+		return refreshTickMsg{}
+	})
+}
 
 func refreshWindowPanes(client windowPaneClient, ctx MonitorContext) tea.Cmd {
 	if client == nil || ctx.WindowID == 0 {
@@ -33,6 +41,29 @@ func refreshWindowPanes(client windowPaneClient, ctx MonitorContext) tea.Cmd {
 	}
 }
 
+func syncWorkspaceBindings(client windowPaneClient, ctx MonitorContext, workspacePaneIDs []int, bindings []SlotBinding, statusText string) tea.Cmd {
+	if client == nil {
+		return nil
+	}
+	if !needsWorkspaceMaterialization(workspacePaneIDs, bindings) {
+		return nil
+	}
+
+	return func() tea.Msg {
+		desired := bindingPaneIDs(bindings)
+		restoreMonitorFocus(client, ctx)
+		if err := rebalanceWorkspaceWithCurrent(client, ctx.WindowID, workspacePaneIDs, desired); err != nil {
+			return slotActionFailedMsg{err: fmt.Errorf("rebalance workspace: %w", err)}
+		}
+		restoreMonitorFocus(client, ctx)
+
+		return slotActionCompletedMsg{
+			bindings:   bindings,
+			statusText: statusText,
+		}
+	}
+}
+
 func replaceSlot(client windowPaneClient, ctx MonitorContext, bindings []SlotBinding, pane CandidatePane, slot SlotID) tea.Cmd {
 	if client == nil {
 		return nil
@@ -48,10 +79,34 @@ func replaceSlot(client windowPaneClient, ctx MonitorContext, bindings []SlotBin
 				return slotActionFailedMsg{err: fmt.Errorf("move replaced pane %d to new tab: %w", replacedPaneID, err)}
 			}
 		}
+		workspace := append([]int(nil), ctx.WorkspacePaneIDs...)
+		for i, id := range workspace {
+			if id == replacedPaneID {
+				workspace = append(workspace[:i], workspace[i+1:]...)
+				break
+			}
+		}
+		restoreMonitorFocus(client, ctx)
+		if err := rebalanceWorkspaceWithCurrent(client, ctx.WindowID, workspace, bindingPaneIDs(nextBindings)); err != nil {
+			return slotActionFailedMsg{err: fmt.Errorf("rebalance workspace: %w", err)}
+		}
+		restoreMonitorFocus(client, ctx)
 		return slotActionCompletedMsg{
 			bindings:   nextBindings,
 			statusText: fmt.Sprintf("Loaded %s into %s", paneLabel(pane), slot),
 		}
+	}
+}
+
+func restoreMonitorFocus(client windowPaneClient, ctx MonitorContext) {
+	if client == nil {
+		return
+	}
+	if ctx.TabID != 0 {
+		_ = client.ActivateTab(ctx.TabID)
+	}
+	if ctx.SelfPaneID != 0 {
+		_ = client.ActivatePane(strconv.Itoa(ctx.SelfPaneID))
 	}
 }
 
@@ -183,4 +238,33 @@ func allowedReplaceSlots(bindings []SlotBinding, pane CandidatePane) []SlotID {
 		slots = append(slots, binding.Slot)
 	}
 	return slots
+}
+
+func needsWorkspaceMaterialization(workspacePaneIDs []int, bindings []SlotBinding) bool {
+	for _, paneID := range bindingPaneIDs(bindings) {
+		if !workspaceContains(workspacePaneIDs, paneID) {
+			return true
+		}
+	}
+	return false
+}
+
+func workspaceContains(workspacePaneIDs []int, paneID int) bool {
+	for _, id := range workspacePaneIDs {
+		if id == paneID {
+			return true
+		}
+	}
+	return false
+}
+
+func insertPaneIDAt(workspacePaneIDs []int, index, paneID int) []int {
+	if index >= len(workspacePaneIDs) {
+		return append(workspacePaneIDs, paneID)
+	}
+
+	workspacePaneIDs = append(workspacePaneIDs, 0)
+	copy(workspacePaneIDs[index+1:], workspacePaneIDs[index:])
+	workspacePaneIDs[index] = paneID
+	return workspacePaneIDs
 }

@@ -51,11 +51,7 @@ func TestMonitorContextValidate(t *testing.T) {
 			},
 			{
 				name: "starter pane id",
-				ctx:  MonitorContext{SelfPaneID: 1, WindowID: 3, TabID: 4},
-			},
-			{
-				name: "window id",
-				ctx:  MonitorContext{SelfPaneID: 1, StarterPaneID: 2, TabID: 4},
+				ctx:  MonitorContext{SelfPaneID: 1, StarterPaneID: -1, WindowID: 3, TabID: 4},
 			},
 			{
 				name: "tab id",
@@ -69,6 +65,30 @@ func TestMonitorContextValidate(t *testing.T) {
 					t.Fatalf("Validate() error = nil, want non-nil")
 				}
 			})
+		}
+	})
+
+	t.Run("allows zero window id for wezterm cli contexts", func(t *testing.T) {
+		ctx := MonitorContext{
+			SelfPaneID:    1,
+			StarterPaneID: 2,
+			WindowID:      0,
+			TabID:         4,
+		}
+		if err := ctx.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("allows zero starter pane id for wezterm cli contexts", func(t *testing.T) {
+		ctx := MonitorContext{
+			SelfPaneID:    1,
+			StarterPaneID: 0,
+			WindowID:      0,
+			TabID:         4,
+		}
+		if err := ctx.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
 		}
 	})
 }

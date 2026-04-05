@@ -396,6 +396,18 @@ func agentTypeStyle(t model.AgentType) lipgloss.Style {
 	return normalStyle
 }
 
+// RenderAgentTypeCell applies the standard Atria agent color styling to a
+// padded cell string.
+func RenderAgentTypeCell(t model.AgentType, text string) string {
+	return agentTypeStyle(t).Render(text)
+}
+
+// RenderSelectedAgentTypeCell applies the standard selected-row background
+// while preserving the agent-specific foreground color.
+func RenderSelectedAgentTypeCell(t model.AgentType, text string) string {
+	return withSelectedBg(agentTypeStyle(t)).Bold(true).Render(text)
+}
+
 // rowColumns holds pre-computed, unstyled column strings for a single row.
 type rowColumns struct {
 	name      string

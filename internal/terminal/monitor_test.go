@@ -405,6 +405,13 @@ func TestInferAgentFromScreen(t *testing.T) {
 			want: model.AgentClaude,
 		},
 		{
+			name: "claude decorated welcome header",
+			content: " ▐▛███▜▌   Claude Code v2.1.92\n" +
+				"▝▜█████▛▘  Opus 4.6 with high effort\n" +
+				"  ▘▘ ▝▝    ~/project/atria\n",
+			want: model.AgentClaude,
+		},
+		{
 			name:    "claude working pattern",
 			content: "some output\n✻ Reading…",
 			want:    model.AgentClaude,
@@ -460,6 +467,15 @@ func TestInferAgentFromScreen(t *testing.T) {
 			name: "codex product text",
 			content: "gpt-5.4-codex default · 90% left\n\n" +
 				"• Working (30s • esc to interrupt)",
+			want: model.AgentCodex,
+		},
+		{
+			name: "codex boxed welcome screen",
+			content: "╭────────────────────────────────────────────╮\n" +
+				"│ >_ OpenAI Codex (v0.118.0)                 │\n" +
+				"│                                            │\n" +
+				"│ model:     gpt-5.4 high   /model to change │\n" +
+				"╰────────────────────────────────────────────╯\n",
 			want: model.AgentCodex,
 		},
 		{

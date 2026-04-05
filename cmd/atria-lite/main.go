@@ -39,6 +39,8 @@ var runMonitorUI = func(ctx lite.MonitorContext) error {
 	return err
 }
 
+var runLiteStart = lite.Start
+
 func run(args []string) int {
 	if len(args) == 0 {
 		printUsage(os.Stderr)
@@ -74,7 +76,13 @@ func runStart(args []string) error {
 	if len(args) > 0 {
 		return usageError{msg: "start does not accept arguments"}
 	}
-	return lite.Start(lite.StartOptions{})
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve current executable: %w", err)
+	}
+	return runLiteStart(lite.StartOptions{
+		MonitorCommand: []string{exePath, "monitor"},
+	})
 }
 
 func runMonitor(args []string) error {
@@ -107,7 +115,7 @@ func runMonitor(args []string) error {
 	if err != nil {
 		return usageError{msg: err.Error()}
 	}
-	if ctx.SelfPaneID == 0 && ctx.StarterPaneID != 0 && ctx.WindowID != 0 && ctx.TabID != 0 {
+	if ctx.SelfPaneID == 0 && ctx.StarterPaneID >= 0 && ctx.WindowID >= 0 && ctx.TabID != 0 {
 		selfPaneID, err := wezterm.CurrentPaneIDFromEnv()
 		if err != nil {
 			return usageError{msg: err.Error()}

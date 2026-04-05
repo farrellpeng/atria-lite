@@ -191,6 +191,9 @@ func TestListPanesStructuresFields(t *testing.T) {
 	if first.Title != "claude" {
 		t.Fatalf("first.Title = %q, want %q", first.Title, "claude")
 	}
+	if first.Cols != 0 {
+		t.Fatalf("first.Cols = %d, want 0", first.Cols)
+	}
 	if first.TTYName != "/dev/pts/1" {
 		t.Fatalf("first.TTYName = %q, want %q", first.TTYName, "/dev/pts/1")
 	}
@@ -382,6 +385,31 @@ func TestSplitPaneOmitsPercentWhenZero(t *testing.T) {
 	}
 }
 
+func TestSplitPaneSupportsMovingExistingPane(t *testing.T) {
+	scriptPath, argsPath := writeWeztermStub(t, "123\n")
+	c := NewClient(scriptPath)
+
+	if _, err := c.SplitPane(SplitPaneOptions{
+		PaneID:     11,
+		Direction:  "right",
+		MovePaneID: 22,
+	}); err != nil {
+		t.Fatalf("SplitPane() error: %v", err)
+	}
+
+	gotArgs := readArgsLog(t, argsPath)
+	wantArgs := []string{
+		"cli",
+		"split-pane",
+		"--pane-id", "11",
+		"--right",
+		"--move-pane-id", "22",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("SplitPane args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
 func TestSplitPaneValidatesPercent(t *testing.T) {
 	c := NewClient("wezterm")
 	for _, tc := range []struct {
@@ -420,6 +448,44 @@ func TestMovePaneToNewTabUsesWindowID(t *testing.T) {
 	}
 }
 
+func TestMovePaneToNewTabOmitsZeroWindowID(t *testing.T) {
+	scriptPath, argsPath := writeWeztermStub(t, "")
+	c := NewClient(scriptPath)
+
+	if err := c.MovePaneToNewTab(55, 0); err != nil {
+		t.Fatalf("MovePaneToNewTab() error: %v", err)
+	}
+
+	gotArgs := readArgsLog(t, argsPath)
+	wantArgs := []string{
+		"cli",
+		"move-pane-to-new-tab",
+		"--pane-id", "55",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("MovePaneToNewTab args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestMovePaneToNewTabOmitsZeroPaneID(t *testing.T) {
+	scriptPath, argsPath := writeWeztermStub(t, "")
+	c := NewClient(scriptPath)
+
+	if err := c.MovePaneToNewTab(0, 77); err != nil {
+		t.Fatalf("MovePaneToNewTab() error: %v", err)
+	}
+
+	gotArgs := readArgsLog(t, argsPath)
+	wantArgs := []string{
+		"cli",
+		"move-pane-to-new-tab",
+		"--window-id", "77",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("MovePaneToNewTab args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
 func TestMovePaneToNewTabValidatesIDs(t *testing.T) {
 	c := NewClient("wezterm")
 	tests := []struct {
@@ -427,9 +493,7 @@ func TestMovePaneToNewTabValidatesIDs(t *testing.T) {
 		paneID   int
 		windowID int
 	}{
-		{name: "zero pane", paneID: 0, windowID: 1},
 		{name: "negative pane", paneID: -1, windowID: 1},
-		{name: "zero window", paneID: 1, windowID: 0},
 		{name: "negative window", paneID: 1, windowID: -1},
 	}
 
@@ -438,6 +502,49 @@ func TestMovePaneToNewTabValidatesIDs(t *testing.T) {
 			err := c.MovePaneToNewTab(tt.paneID, tt.windowID)
 			if err == nil {
 				t.Fatalf("expected error for paneID=%d windowID=%d", tt.paneID, tt.windowID)
+			}
+		})
+	}
+}
+
+func TestAdjustPaneSizeUsesPaneIDAndAmount(t *testing.T) {
+	scriptPath, argsPath := writeWeztermStub(t, "")
+	c := NewClient(scriptPath)
+
+	if err := c.AdjustPaneSize(55, "Right", 7); err != nil {
+		t.Fatalf("AdjustPaneSize() error: %v", err)
+	}
+
+	gotArgs := readArgsLog(t, argsPath)
+	wantArgs := []string{
+		"cli",
+		"adjust-pane-size",
+		"--pane-id", "55",
+		"--amount", "7",
+		"Right",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("AdjustPaneSize args = %v, want %v", gotArgs, wantArgs)
+	}
+}
+
+func TestAdjustPaneSizeValidatesInputs(t *testing.T) {
+	c := NewClient("wezterm")
+	tests := []struct {
+		name      string
+		paneID    int
+		direction string
+		amount    int
+	}{
+		{name: "zero pane", paneID: 0, direction: "Right", amount: 1},
+		{name: "bad direction", paneID: 1, direction: "Diagonal", amount: 1},
+		{name: "zero amount", paneID: 1, direction: "Right", amount: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := c.AdjustPaneSize(tt.paneID, tt.direction, tt.amount); err == nil {
+				t.Fatal("expected validation error")
 			}
 		})
 	}

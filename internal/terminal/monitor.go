@@ -21,10 +21,12 @@ func normalizeScreenText(s string) string {
 var brandedAgentPatterns = map[model.AgentType][]*regexp.Regexp{
 	model.AgentClaude: {
 		regexp.MustCompile(`(?m)^\s*Claude Code(?:\s+v[\d.]+)?\b`),
+		regexp.MustCompile(`(?m)Claude Code(?:\s+v[\d.]+)?\b`),
 	},
 	model.AgentCodex: {
 		regexp.MustCompile(`(?m)\bgpt-\S+-codex\b`),
 		regexp.MustCompile(`(?m)^\s*OpenAI Codex\b`),
+		regexp.MustCompile(`(?m)OpenAI Codex\b`),
 	},
 	model.AgentOpenCode: {
 		regexp.MustCompile(`(?m)^\s*OC \| .+\(opencode\)\s*$`),

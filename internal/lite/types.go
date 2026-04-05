@@ -52,10 +52,10 @@ func (ctx MonitorContext) Validate() error {
 	switch {
 	case ctx.SelfPaneID == 0:
 		return fmt.Errorf("self pane id is required")
-	case ctx.StarterPaneID == 0:
-		return fmt.Errorf("starter pane id is required")
-	case ctx.WindowID == 0:
-		return fmt.Errorf("window id is required")
+	case ctx.StarterPaneID < 0:
+		return fmt.Errorf("starter pane id must be non-negative")
+	case ctx.WindowID < 0:
+		return fmt.Errorf("window id must be non-negative")
 	case ctx.TabID == 0:
 		return fmt.Errorf("tab id is required")
 	default:

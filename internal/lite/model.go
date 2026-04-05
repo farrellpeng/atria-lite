@@ -2,6 +2,7 @@ package lite
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -18,11 +19,17 @@ const (
 	ModeNormalPanePicker
 )
 
+const loadedPaneMissingGraceCycles = 2
+
 type windowPaneClient interface {
 	ListWindowPanes(windowID int) ([]wezterm.PaneInfo, error)
 	ReadScreen(sessionID string, lines int) (string, error)
 	GetVar(sessionID, varName string) (string, error)
+	SplitPane(opts wezterm.SplitPaneOptions) (int, error)
+	AdjustPaneSize(paneID int, direction string, amount int) error
 	MovePaneToNewTab(paneID, windowID int) error
+	ActivateTab(tabID int) error
+	ActivatePane(sessionID string) error
 }
 
 type Model struct {
@@ -38,6 +45,8 @@ type Model struct {
 	statusText string
 	width      int
 	height     int
+
+	missingPaneGrace map[int]int
 }
 
 func NewModel(client windowPaneClient, ctx MonitorContext) Model {
@@ -46,10 +55,11 @@ func NewModel(client windowPaneClient, ctx MonitorContext) Model {
 	ctx.WorkspacePaneIDs = bindingPaneIDs(bindings)
 
 	return Model{
-		client:   client,
-		ctx:      ctx,
-		mode:     ModeList,
-		bindings: bindings,
+		client:           client,
+		ctx:              ctx,
+		mode:             ModeList,
+		bindings:         bindings,
+		missingPaneGrace: make(map[int]int),
 	}
 }
 
@@ -64,26 +74,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 	case windowPanesLoadedMsg:
 		m.panes = classifyWindowPanes(msg.panes, m.ctx)
-		m.reconcileBindings()
+		nextBindings, autoloadedPane, recoverWorkspace := m.reconcileBindings()
 		m.syncReplacePrompt()
 		m.clampCursor()
 		m.statusText = m.modeStatusText()
+		if autoloadedPane != nil {
+			if cmd := syncWorkspaceBindings(m.client, m.ctx, m.ctx.WorkspacePaneIDs, nextBindings, fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))); cmd != nil {
+				return m, cmd
+			}
+			m.applyBindings(nextBindings)
+			m.statusText = fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))
+		} else if len(recoverWorkspace) > 0 {
+			if cmd := syncWorkspaceBindings(m.client, m.ctx, recoverWorkspace, nextBindings, "Restoring workspace"); cmd != nil {
+				return m, cmd
+			}
+		}
 	case candidatePanesLoadedMsg:
 		m.panes = msg.panes
-		m.reconcileBindings()
+		nextBindings, autoloadedPane, recoverWorkspace := m.reconcileBindings()
 		m.syncReplacePrompt()
 		m.clampCursor()
 		m.statusText = m.modeStatusText()
+		if autoloadedPane != nil {
+			if cmd := syncWorkspaceBindings(m.client, m.ctx, m.ctx.WorkspacePaneIDs, nextBindings, fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))); cmd != nil {
+				return m, tea.Batch(cmd, refreshTickCmd())
+			}
+			m.applyBindings(nextBindings)
+			m.statusText = fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))
+		} else if len(recoverWorkspace) > 0 {
+			if cmd := syncWorkspaceBindings(m.client, m.ctx, recoverWorkspace, nextBindings, "Restoring workspace"); cmd != nil {
+				return m, tea.Batch(cmd, refreshTickCmd())
+			}
+		}
+		return m, refreshTickCmd()
 	case windowPanesLoadFailedMsg:
 		m.statusText = fmt.Sprintf("Refresh failed: %v", msg.err)
+		return m, refreshTickCmd()
+	case refreshTickMsg:
+		return m, refreshWindowPanes(m.client, m.ctx)
 	case slotActionCompletedMsg:
 		m.mode = ModeList
 		m.replacePane = CandidatePane{}
-		m.bindings = normalizeBindings(msg.bindings)
-		m.ctx.SlotBindings = m.bindings
-		m.ctx.WorkspacePaneIDs = bindingPaneIDs(m.bindings)
+		m.applyBindings(msg.bindings)
 		m.clampCursor()
 		m.statusText = msg.statusText
+		return m, tea.Batch(tea.ClearScreen, tea.WindowSize())
 	case slotActionFailedMsg:
 		m.statusText = fmt.Sprintf("Action failed: %v", msg.err)
 	case tea.KeyMsg:
@@ -130,9 +165,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusText = m.modeStatusText()
 			return m, nil
 		}
-		m.bindings = nextBindings
-		m.ctx.SlotBindings = nextBindings
-		m.ctx.WorkspacePaneIDs = bindingPaneIDs(nextBindings)
+		if cmd := syncWorkspaceBindings(m.client, m.ctx, m.ctx.WorkspacePaneIDs, nextBindings, fmt.Sprintf("Loaded %s", paneLabel(selected))); cmd != nil {
+			return m, cmd
+		}
+		m.applyBindings(nextBindings)
 		m.statusText = fmt.Sprintf("Loaded %s", paneLabel(selected))
 	case "n":
 		m.mode = ModeNormalPanePicker
@@ -169,9 +205,10 @@ func (m Model) handleNormalPanePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.mode = ModeList
-		m.bindings = nextBindings
-		m.ctx.SlotBindings = nextBindings
-		m.ctx.WorkspacePaneIDs = bindingPaneIDs(nextBindings)
+		if cmd := syncWorkspaceBindings(m.client, m.ctx, m.ctx.WorkspacePaneIDs, nextBindings, fmt.Sprintf("Loaded %s", paneLabel(selected))); cmd != nil {
+			return m, cmd
+		}
+		m.applyBindings(nextBindings)
 		m.clampCursor()
 		m.statusText = fmt.Sprintf("Loaded %s", paneLabel(selected))
 	case "esc", "q":
@@ -230,7 +267,7 @@ func classifyWindowPanes(panes []wezterm.PaneInfo, ctx MonitorContext) []Candida
 	return candidates
 }
 
-func (m *Model) reconcileBindings() {
+func (m *Model) reconcileBindings() ([]SlotBinding, *CandidatePane, []int) {
 	liveKinds := make(map[int]OccupantKind, len(m.panes))
 	livePaneByID := make(map[int]CandidatePane, len(m.panes))
 	livePaneIDs := make(map[int]bool, len(m.panes))
@@ -241,21 +278,162 @@ func (m *Model) reconcileBindings() {
 	}
 
 	current := normalizeBindings(m.bindings)
+	if len(current) == 0 && len(m.ctx.WorkspacePaneIDs) == 0 {
+		current = m.bootstrapBindingsFromStarter(livePaneByID)
+	}
 	for i := range current {
 		if kind, ok := liveKinds[current[i].PaneID]; ok {
 			current[i].Kind = kind
 		}
 	}
 
-	m.bindings = ShrinkBindings(current, livePaneIDs)
-	m.ctx.SlotBindings = m.bindings
-	m.ctx.WorkspacePaneIDs = bindingPaneIDs(m.bindings)
+	current = m.retainTransientMissingBindings(current, livePaneIDs)
+	m.applyBindings(current)
+	m.ctx.WorkspacePaneIDs = m.visibleWorkspacePaneIDs(current, livePaneByID)
 
 	if candidate, ok := livePaneByID[m.replacePane.PaneID]; ok {
 		if candidate.Kind == m.replacePane.Kind {
 			m.replacePane = candidate
 		}
 	}
+	nextBindings, autoloadedPane := m.autoLoadDiscoveredAgents(current)
+	recoverWorkspace := m.recoverWorkspacePaneIDs(current)
+	return nextBindings, autoloadedPane, recoverWorkspace
+}
+
+func (m *Model) bootstrapBindingsFromStarter(livePaneByID map[int]CandidatePane) []SlotBinding {
+	starterPane, ok := livePaneByID[m.ctx.StarterPaneID]
+	if !ok {
+		return nil
+	}
+	return []SlotBinding{
+		{
+			Slot:   Slot1,
+			PaneID: starterPane.PaneID,
+			Kind:   starterPane.Kind,
+		},
+	}
+}
+
+func (m *Model) autoLoadDiscoveredAgents(bindings []SlotBinding) ([]SlotBinding, *CandidatePane) {
+	current := normalizeBindings(bindings)
+	if len(m.ctx.WorkspacePaneIDs) == 0 {
+		return current, nil
+	}
+	var autoloadedPane *CandidatePane
+	for _, pane := range m.panes {
+		if pane.Kind != OccupantAgent {
+			continue
+		}
+		next, prompt := PlanAgentLoad(current, pane)
+		if prompt {
+			break
+		}
+		if !sameBindings(next, current) && autoloadedPane == nil {
+			paneCopy := pane
+			autoloadedPane = &paneCopy
+		}
+		current = next
+	}
+	return current, autoloadedPane
+}
+
+func (m *Model) applyBindings(bindings []SlotBinding) {
+	next := normalizeBindings(bindings)
+	previous := make(map[int]bool, len(m.bindings))
+	for _, binding := range m.bindings {
+		previous[binding.PaneID] = true
+	}
+
+	active := make(map[int]bool, len(next))
+	for _, binding := range next {
+		active[binding.PaneID] = true
+		if !previous[binding.PaneID] {
+			m.missingPaneGrace[binding.PaneID] = loadedPaneMissingGraceCycles
+		}
+	}
+	for paneID := range m.missingPaneGrace {
+		if !active[paneID] {
+			delete(m.missingPaneGrace, paneID)
+		}
+	}
+
+	m.bindings = next
+	m.ctx.SlotBindings = m.bindings
+	m.ctx.WorkspacePaneIDs = bindingPaneIDs(m.bindings)
+}
+
+func (m *Model) retainTransientMissingBindings(bindings []SlotBinding, livePaneIDs map[int]bool) []SlotBinding {
+	current := normalizeBindings(bindings)
+	kept := make([]SlotBinding, 0, len(current))
+
+	for _, binding := range current {
+		if livePaneIDs[binding.PaneID] {
+			delete(m.missingPaneGrace, binding.PaneID)
+			kept = append(kept, binding)
+			continue
+		}
+
+		if remaining := m.missingPaneGrace[binding.PaneID]; remaining > 0 {
+			m.missingPaneGrace[binding.PaneID] = remaining - 1
+			kept = append(kept, binding)
+		} else {
+			delete(m.missingPaneGrace, binding.PaneID)
+		}
+	}
+
+	return reindex(kept)
+}
+
+func (m *Model) visibleWorkspacePaneIDs(bindings []SlotBinding, livePaneByID map[int]CandidatePane) []int {
+	current := normalizeBindings(bindings)
+	visible := make([]int, 0, len(current))
+	for _, binding := range current {
+		pane, ok := livePaneByID[binding.PaneID]
+		if !ok {
+			continue
+		}
+		if m.ctx.TabID != 0 && pane.TabID != m.ctx.TabID {
+			continue
+		}
+		visible = append(visible, binding.PaneID)
+	}
+
+	if len(visible) == 0 {
+		if starter, ok := livePaneByID[m.ctx.StarterPaneID]; ok && starter.PaneID != m.ctx.SelfPaneID {
+			if m.ctx.TabID == 0 || starter.TabID == m.ctx.TabID {
+				visible = append(visible, starter.PaneID)
+			}
+		}
+	}
+
+	return visible
+}
+
+func (m *Model) recoverWorkspacePaneIDs(bindings []SlotBinding) []int {
+	current := normalizeBindings(bindings)
+	if len(current) == 0 {
+		return nil
+	}
+	if len(m.ctx.WorkspacePaneIDs) == 0 {
+		return nil
+	}
+	if len(m.ctx.WorkspacePaneIDs) >= len(current) {
+		return nil
+	}
+	return append([]int(nil), m.ctx.WorkspacePaneIDs...)
+}
+
+func sameBindings(a, b []SlotBinding) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Model) clampCursor() {
@@ -294,10 +472,51 @@ func filterPanesByKind(panes []CandidatePane, kind OccupantKind) []CandidatePane
 
 func paneLabel(pane CandidatePane) string {
 	label := strings.TrimSpace(pane.Title)
+	if pane.Kind == OccupantAgent && pane.AgentType != "" {
+		preferred := preferredAgentPaneLabel(pane.AgentType)
+		if label == "" || isGenericPaneTitle(label, pane.CWD) {
+			return preferred
+		}
+	}
 	if label == "" {
+		if pane.Kind == OccupantAgent && pane.AgentType != "" {
+			return preferredAgentPaneLabel(pane.AgentType)
+		}
 		label = fmt.Sprintf("pane %d", pane.PaneID)
 	}
 	return label
+}
+
+func preferredAgentPaneLabel(agentType model.AgentType) string {
+	switch agentType {
+	case model.AgentClaude:
+		return "Claude Code"
+	case model.AgentCodex:
+		return "Codex"
+	case model.AgentOpenCode:
+		return "OpenCode"
+	case model.AgentCopilot:
+		return "Copilot"
+	default:
+		return string(agentType)
+	}
+}
+
+func isGenericPaneTitle(title, cwd string) bool {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	switch lower {
+	case "shell", "bash", "zsh", "fish", "sh", "cmd.exe", "powershell", "pwsh":
+		return true
+	}
+	if cwd == "" {
+		return false
+	}
+	base := filepath.Base(strings.TrimSuffix(strings.TrimSpace(cwd), "/"))
+	return base != "." && base != "/" && strings.EqualFold(trimmed, base)
 }
 
 func (m *Model) syncReplacePrompt() {
