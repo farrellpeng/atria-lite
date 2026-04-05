@@ -26,7 +26,10 @@ type PaneInfo struct {
 	Workspace string
 	Title     string
 	CWD       string
+	Rows      int
 	Cols      int
+	LeftCol   int
+	TopRow    int
 	TTYName   string
 	IsSelf    bool
 	// IsActive is kept as a compatibility alias for IsSelf.
@@ -76,8 +79,11 @@ type listEntry struct {
 	Title     string `json:"title"`
 	CWD       string `json:"cwd"`
 	Size      struct {
+		Rows int `json:"rows"`
 		Cols int `json:"cols"`
 	} `json:"size"`
+	LeftCol int    `json:"left_col"`
+	TopRow  int    `json:"top_row"`
 	TTYName string `json:"tty_name"`
 }
 
@@ -90,7 +96,10 @@ func (e listEntry) toPaneInfo(selfPaneID int) PaneInfo {
 		Workspace: e.Workspace,
 		Title:     e.Title,
 		CWD:       normalizeCWD(e.CWD),
+		Rows:      e.Size.Rows,
 		Cols:      e.Size.Cols,
+		LeftCol:   e.LeftCol,
+		TopRow:    e.TopRow,
 		TTYName:   e.TTYName,
 		IsSelf:    isSelf,
 		IsActive:  isSelf,

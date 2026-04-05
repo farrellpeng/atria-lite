@@ -13,6 +13,13 @@ import (
 const liteScreenReadLines = 40
 const liteRefreshInterval = 3 * time.Second
 
+const (
+	workspaceSettleAttempts   = 5
+	workspaceSettleRetryDelay = 50 * time.Millisecond
+)
+
+var sleepForWorkspaceSettle = time.Sleep
+
 func refreshTickCmd() tea.Cmd {
 	return tea.Tick(liteRefreshInterval, func(time.Time) tea.Msg {
 		return refreshTickMsg{}
@@ -37,6 +44,7 @@ func refreshWindowPanes(client windowPaneClient, ctx MonitorContext) tea.Cmd {
 			}
 			candidates = append(candidates, classifyCandidatePane(client, pane))
 		}
+		liteDebugf("refresh window=%d tab=%d self=%d panes=%v candidates=%v", ctx.WindowID, ctx.TabID, ctx.SelfPaneID, summarizePaneInfos(panes), summarizeCandidates(candidates))
 		return candidatePanesLoadedMsg{panes: candidates}
 	}
 }
@@ -51,8 +59,14 @@ func syncWorkspaceBindings(client windowPaneClient, ctx MonitorContext, workspac
 
 	return func() tea.Msg {
 		desired := bindingPaneIDs(bindings)
+		liteDebugf("sync workspace current=%v desired=%v bindings=%v", workspacePaneIDs, desired, bindings)
 		restoreMonitorFocus(client, ctx)
-		if err := rebalanceWorkspaceWithCurrent(client, ctx.WindowID, workspacePaneIDs, desired); err != nil {
+		if shouldRecreateWorkspaceFromMonitor(workspacePaneIDs, desired) {
+			liteDebugf("sync action=recreate-from-monitor desired=%v", desired)
+			if err := recreateWorkspaceFromMonitor(client, ctx, desired); err != nil {
+				return slotActionFailedMsg{err: fmt.Errorf("recreate workspace: %w", err)}
+			}
+		} else if err := rebalanceWorkspaceWithCurrent(client, ctx.WindowID, workspacePaneIDs, desired); err != nil {
 			return slotActionFailedMsg{err: fmt.Errorf("rebalance workspace: %w", err)}
 		}
 		restoreMonitorFocus(client, ctx)
@@ -62,6 +76,78 @@ func syncWorkspaceBindings(client windowPaneClient, ctx MonitorContext, workspac
 			statusText: statusText,
 		}
 	}
+}
+
+func shouldRecreateWorkspaceFromMonitor(currentPaneIDs, desiredPaneIDs []int) bool {
+	if len(desiredPaneIDs) == 0 {
+		return false
+	}
+	if len(currentPaneIDs) == 0 {
+		return true
+	}
+	if len(currentPaneIDs) == 1 && len(desiredPaneIDs) > 1 {
+		return true
+	}
+	return false
+}
+
+func recreateWorkspaceFromMonitor(client windowPaneClient, ctx MonitorContext, desiredPaneIDs []int) error {
+	if len(desiredPaneIDs) == 0 {
+		return nil
+	}
+	if ctx.SelfPaneID == 0 {
+		return fmt.Errorf("monitor pane id is required to recreate workspace")
+	}
+
+	if _, err := client.SplitPane(wezterm.SplitPaneOptions{
+		PaneID:     ctx.SelfPaneID,
+		Direction:  "bottom",
+		TopLevel:   true,
+		Percent:    100 - defaultMonitorPercent,
+		MovePaneID: desiredPaneIDs[0],
+	}); err != nil {
+		return fmt.Errorf("split monitor pane for workspace: %w", err)
+	}
+	liteDebugf("recreate monitor=%d moved=%d desired=%v", ctx.SelfPaneID, desiredPaneIDs[0], desiredPaneIDs)
+	waitForWorkspaceAnchor(client, ctx, desiredPaneIDs[0])
+	if len(desiredPaneIDs) == 1 {
+		return nil
+	}
+	return rebalanceWorkspaceWithCurrent(client, ctx.WindowID, []int{desiredPaneIDs[0]}, desiredPaneIDs)
+}
+
+func waitForWorkspaceAnchor(client windowPaneClient, ctx MonitorContext, anchorPaneID int) {
+	if client == nil || ctx.WindowID == 0 || ctx.SelfPaneID == 0 || anchorPaneID == 0 {
+		return
+	}
+
+	for attempt := 0; attempt < workspaceSettleAttempts; attempt++ {
+		panes, err := client.ListWindowPanes(ctx.WindowID)
+		if err == nil {
+			var monitorPane *wezterm.PaneInfo
+			var anchorPane *wezterm.PaneInfo
+			for _, pane := range panes {
+				pane := pane
+				switch pane.PaneID {
+				case ctx.SelfPaneID:
+					monitorPane = &pane
+				case anchorPaneID:
+					anchorPane = &pane
+				}
+			}
+			if monitorPane != nil && anchorPane != nil &&
+				anchorPane.TabID == monitorPane.TabID &&
+				anchorPane.TopRow > monitorPane.TopRow {
+				liteDebugf("workspace anchor settled monitor=%d anchor=%d monitorTop=%d anchorTop=%d", ctx.SelfPaneID, anchorPaneID, monitorPane.TopRow, anchorPane.TopRow)
+				return
+			}
+		}
+
+		if attempt < workspaceSettleAttempts-1 {
+			sleepForWorkspaceSettle(workspaceSettleRetryDelay)
+		}
+	}
+	liteDebugf("workspace anchor not settled monitor=%d anchor=%d", ctx.SelfPaneID, anchorPaneID)
 }
 
 func replaceSlot(client windowPaneClient, ctx MonitorContext, bindings []SlotBinding, pane CandidatePane, slot SlotID) tea.Cmd {
@@ -103,9 +189,11 @@ func restoreMonitorFocus(client windowPaneClient, ctx MonitorContext) {
 		return
 	}
 	if ctx.TabID != 0 {
+		liteDebugf("focus activate-tab %d", ctx.TabID)
 		_ = client.ActivateTab(ctx.TabID)
 	}
 	if ctx.SelfPaneID != 0 {
+		liteDebugf("focus activate-pane %d", ctx.SelfPaneID)
 		_ = client.ActivatePane(strconv.Itoa(ctx.SelfPaneID))
 	}
 }

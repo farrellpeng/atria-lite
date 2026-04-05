@@ -84,7 +84,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.applyBindings(nextBindings)
 			m.statusText = fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))
-		} else if len(recoverWorkspace) > 0 {
+		} else if recoverWorkspace != nil {
 			if cmd := syncWorkspaceBindings(m.client, m.ctx, recoverWorkspace, nextBindings, "Restoring workspace"); cmd != nil {
 				return m, cmd
 			}
@@ -101,7 +101,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.applyBindings(nextBindings)
 			m.statusText = fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))
-		} else if len(recoverWorkspace) > 0 {
+		} else if recoverWorkspace != nil {
 			if cmd := syncWorkspaceBindings(m.client, m.ctx, recoverWorkspace, nextBindings, "Restoring workspace"); cmd != nil {
 				return m, tea.Batch(cmd, refreshTickCmd())
 			}
@@ -290,6 +290,7 @@ func (m *Model) reconcileBindings() ([]SlotBinding, *CandidatePane, []int) {
 	current = m.retainTransientMissingBindings(current, livePaneIDs)
 	m.applyBindings(current)
 	m.ctx.WorkspacePaneIDs = m.visibleWorkspacePaneIDs(current, livePaneByID)
+	liteDebugf("reconcile current=%v visible=%v panes=%v", current, m.ctx.WorkspacePaneIDs, summarizeCandidates(m.panes))
 
 	if candidate, ok := livePaneByID[m.replacePane.PaneID]; ok {
 		if candidate.Kind == m.replacePane.Kind {
@@ -298,6 +299,7 @@ func (m *Model) reconcileBindings() ([]SlotBinding, *CandidatePane, []int) {
 	}
 	nextBindings, autoloadedPane := m.autoLoadDiscoveredAgents(current)
 	recoverWorkspace := m.recoverWorkspacePaneIDs(current)
+	liteDebugf("reconcile result next=%v autoload=%v recover=%v", nextBindings, summarizeCandidatePtr(autoloadedPane), recoverWorkspace)
 	return nextBindings, autoloadedPane, recoverWorkspace
 }
 
@@ -317,9 +319,6 @@ func (m *Model) bootstrapBindingsFromStarter(livePaneByID map[int]CandidatePane)
 
 func (m *Model) autoLoadDiscoveredAgents(bindings []SlotBinding) ([]SlotBinding, *CandidatePane) {
 	current := normalizeBindings(bindings)
-	if len(m.ctx.WorkspacePaneIDs) == 0 {
-		return current, nil
-	}
 	var autoloadedPane *CandidatePane
 	for _, pane := range m.panes {
 		if pane.Kind != OccupantAgent {
@@ -415,11 +414,11 @@ func (m *Model) recoverWorkspacePaneIDs(bindings []SlotBinding) []int {
 	if len(current) == 0 {
 		return nil
 	}
-	if len(m.ctx.WorkspacePaneIDs) == 0 {
-		return nil
-	}
 	if len(m.ctx.WorkspacePaneIDs) >= len(current) {
 		return nil
+	}
+	if len(m.ctx.WorkspacePaneIDs) == 0 {
+		return []int{}
 	}
 	return append([]int(nil), m.ctx.WorkspacePaneIDs...)
 }
