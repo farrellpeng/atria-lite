@@ -18,6 +18,12 @@ type usageError struct {
 	msg string
 }
 
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
+
 func (e usageError) Error() string {
 	return e.msg
 }

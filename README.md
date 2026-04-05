@@ -102,6 +102,26 @@ Most settings can also be configured interactively from the settings screen (`I`
 | `Ctrl+\` | Return from embedded terminal |
 | `q` / `Ctrl+C` | Quit |
 
+## Local Build
+
+Build the Lite binary directly from the repo root:
+
+```bash
+./scripts/build-atria-lite.sh
+```
+
+This generates:
+
+```bash
+./dist/atria-lite
+```
+
+You can then run it directly:
+
+```bash
+./dist/atria-lite --help
+```
+
 ### Embedded Terminal
 
 When focusing a built-in PTY agent, atria opens an embedded terminal view with full keystroke forwarding. Press `Ctrl+\` to return to the dashboard.

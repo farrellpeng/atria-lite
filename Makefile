@@ -1,4 +1,4 @@
-.PHONY: build test vet lint install release clean
+.PHONY: build build-lite test vet lint install release clean
 
 VERSION ?= dev
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -7,6 +7,9 @@ LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o atria .
+
+build-lite:
+	VERSION="$(VERSION)" COMMIT="$(COMMIT)" DATE="$(DATE)" ./scripts/build-atria-lite.sh
 
 test:
 	go test ./...
