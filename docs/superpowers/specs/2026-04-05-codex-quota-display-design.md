@@ -28,7 +28,7 @@ No python3 dependency — Go communicates directly via `os/exec` stdin/stdout pi
 ### Error handling
 
 - codex binary not found → silent skip, no error
-- Timeout (8s) or parse failure → return last cached data if fresh, else nil
+- Timeout (15s first fetch, 8s subsequent) or parse failure → `Fetch()` returns last cached data internally; on fresh failure, returns nil
 - Rate limit is account-level, not session-level
 
 ## Architecture
@@ -45,25 +45,25 @@ type QuotaInfo struct {
 }
 
 type Client struct {
-    codexBin string           // resolved codex binary path
+    codexBin string           // resolved codex binary path, "" means no-op
     cache    *QuotaInfo
     cacheTTL time.Duration    // default 60s
     mu       sync.RWMutex
 }
 
-func NewClient() *Client                    // finds codex binary, returns nil if not found
-func (c *Client) Fetch() (*QuotaInfo, error) // runs JSON-RPC, returns quota data
-func (c *Client) Cached() *QuotaInfo        // returns cached data if within TTL
+func NewClient() *Client                      // finds codex binary; empty codexBin if not found
+func (c *Client) Available() bool             // returns codexBin != ""
+func (c *Client) Fetch() *QuotaInfo           // runs JSON-RPC, returns quota (cached on error)
 ```
 
-`QuotaInfo` is defined in the `codex` package. The lite Model holds a `*codex.QuotaInfo` field for the global account-level quota.
+`Client` is always non-nil. When codex binary is not found, `Available()` returns false and `Fetch()` returns nil. This avoids nil-checks at every call site.
 
 ### Codex binary discovery
 
 1. `os/exec.LookPath("codex")`
 2. `$HOME/.nvm/versions/node/*/bin/codex` (pick highest version)
 3. Common paths: `~/.local/bin/codex`, `~/.volta/bin/codex`, `/usr/local/bin/codex`, `/opt/homebrew/bin/codex`
-4. Not found → `NewClient()` returns nil, all quota logic skipped
+4. Not found → `codexBin` is empty, `Available()` returns false, all quota logic skipped
 
 ## atria-lite Integration
 
@@ -74,24 +74,36 @@ The `Model` struct gains two new fields:
 ```go
 type Model struct {
     // ... existing fields ...
-    codexClient *codex.Client  // nil if codex binary not found
+    codexClient *codex.Client   // always non-nil; Available() checks binary
     codexQuota  *codex.QuotaInfo // global account-level quota cache
 }
 ```
 
-`NewModel()` calls `codex.NewClient()` and stores the result. If nil, all quota logic is skipped.
+`NewModel()` creates `codex.NewClient()`. No changes to `cmd/atria-lite/main.go` needed.
 
-### Message type: `internal/lite/messages.go`
+### Init change: `internal/lite/model.go`
 
 ```go
+func (m Model) Init() tea.Cmd {
+    cmds := []tea.Cmd{refreshWindowPanes(m.client, m.ctx)}
+    if m.codexClient.Available() {
+        cmds = append(cmds, fetchCodexQuota(m.codexClient))
+    }
+    return tea.Batch(cmds...)
+}
+```
+
+### Message types: `internal/lite/messages.go`
+
+```go
+type codexQuotaTickMsg struct{}
+
 type codexQuotaMsg struct {
     quota *codex.QuotaInfo
 }
 ```
 
 ### Command: `internal/lite/commands.go`
-
-New `tea.Cmd` for periodic quota refresh:
 
 ```go
 const liteQuotaInterval = 60 * time.Second
@@ -103,12 +115,11 @@ func quotaTickCmd() tea.Cmd {
 }
 
 func fetchCodexQuota(client *codex.Client) tea.Cmd {
-    if client == nil {
+    if !client.Available() {
         return nil
     }
     return func() tea.Msg {
-        quota, _ := client.Fetch()
-        return codexQuotaMsg{quota: quota}
+        return codexQuotaMsg{quota: client.Fetch()}
     }
 }
 ```
@@ -117,7 +128,10 @@ func fetchCodexQuota(client *codex.Client) tea.Cmd {
 
 ```go
 case codexQuotaTickMsg:
-    return m, fetchCodexQuota(m.codexClient)
+    if m.codexClient.Available() {
+        return m, fetchCodexQuota(m.codexClient)
+    }
+    return m, nil
 
 case codexQuotaMsg:
     if msg.quota != nil {
@@ -126,11 +140,11 @@ case codexQuotaMsg:
     return m, quotaTickCmd()
 ```
 
-Startup: when `Init()` returns, also return `fetchCodexQuota(m.codexClient)` for immediate first fetch.
-
 ### Display: `internal/lite/view.go`
 
-Modified `renderPaneRow` — when the pane is a Codex agent and `m.codexQuota` is non-nil, append quota to status text.
+Modified `renderPaneRow` — when the pane is a Codex agent and `m.codexQuota` is non-nil, append quota to status text **before** truncation.
+
+**Column width adjustment:** `statusWidth` is increased from 24→32 (narrow) and 28→36 (wide) to accommodate quota text. The CWD column shrinks by the same amount. This is necessary because the current 24-char status column cannot fit both status text and quota suffix.
 
 The quota string is built in a helper:
 
@@ -138,7 +152,7 @@ The quota string is built in a helper:
 func formatQuotaSuffix(quota *codex.QuotaInfo) string
 ```
 
-Returns something like `" · 73% (2h10m)"`. Coloring is handled by the existing `statusStyle` mechanism.
+Returns `" · 73% (2h10m)"`. Quota coloring uses percentage-based styles (green/yellow/red) applied independently from the status style. In `renderPaneRow`, the status cell is rendered as two styled segments: `statusStyle.Render(statusText) + quotaStyle.Render(quotaSuffix)`.
 
 Display rules:
 
@@ -151,18 +165,21 @@ Display rules:
 
 - Only Codex panes show quota
 - `needs_input` and `error` omit quota
-- Primary (5h) always shown; secondary (7d) shown when space permits
+- Primary (5h) always shown; secondary (7d) shown when status column has remaining space
 - Color coding: green (<50%), yellow (50-79%), red (>=80%)
+
+**Note on multiple Codex panes:** quota is account-level, so all Codex panes show the same data. This is correct and expected — users running multiple Codex sessions need to know the shared limit.
 
 ## What does NOT change
 
 - Existing `ReadScreen` / `ClassifyScreen` / `ClassifyOutput` logic untouched
 - `gpt-\S+-codex` idle pattern still used for status detection
 - Main atria TUI (`internal/tui/`) not affected
+- `cmd/atria-lite/main.go` not affected (NewModel creates codex.Client internally)
 - No new external dependencies (codex binary is already required for Codex sessions)
 
 ## Testing
 
-- `internal/codex/client_test.go`: mock `exec.Cmd`, test JSON-RPC protocol parsing, caching, timeout
-- `internal/lite/model_test.go`: verify quota field handling, tick scheduling
-- `internal/lite/view_test.go`: verify quota rendering in pane rows
+- `internal/codex/client_test.go`: binary discovery, JSON-RPC protocol parsing, caching, timeout, missing secondary field, percentage at 0/100, concurrent Fetch calls
+- `internal/lite/model_test.go`: quota field handling, tick scheduling, Init batch commands
+- `internal/lite/view_test.go`: quota rendering in pane rows, truncation at narrow widths, no quota for non-Codex panes
