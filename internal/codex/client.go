@@ -120,13 +120,18 @@ func timeUntilReset(iso string) string {
 	if d <= 0 {
 		return "now"
 	}
+	if d < time.Minute {
+		return "<1m"
+	}
 	if d < time.Hour {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	if d < 24*time.Hour {
 		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
-	return fmt.Sprintf("%dd%dh", int(d.Hours()/24), int(d.Hours())%24)
+	days := int(d.Hours() / 24)
+	remainingHours := int(d.Hours()) % 24
+	return fmt.Sprintf("%dd%dh", days, remainingHours)
 }
 
 // --- binary discovery ---

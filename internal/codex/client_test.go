@@ -44,6 +44,46 @@ func TestParseRateLimitsResponse_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestTimeUntilReset(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name   string
+		offset time.Duration
+		want   string
+	}{
+		{"expired", -1 * time.Second, "now"},
+		{"sub-minute", 30 * time.Second, "<1m"},
+		{"exactly 1 minute", 1*time.Minute + 5*time.Second, "1m"},
+		{"10 minutes", 10*time.Minute + 5*time.Second, "10m"},
+		{"sub-hour", 45*time.Minute + 30*time.Second, "45m"},
+		{"1 hour", 1*time.Hour + 5*time.Second, "1h0m"},
+		{"1 hour 30 minutes", 1*time.Hour + 30*time.Minute + time.Second, "1h30m"},
+		{"sub-day", 23*time.Hour + 59*time.Minute + time.Second, "23h59m"},
+		{"exactly 24 hours", 24*time.Hour + 5*time.Second, "1d0h"},
+		{"1 day 6 hours", 30*time.Hour + 5*time.Second, "1d6h"},
+		{"2 days", 48*time.Hour + 5*time.Second, "2d0h"},
+		{"2 days 12 hours", 60*time.Hour + 5*time.Second, "2d12h"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target := now.Add(tc.offset)
+			got := timeUntilReset(target.Format(time.RFC3339))
+			if got != tc.want {
+				t.Errorf("timeUntilReset(%s) = %q, want %q", tc.offset, got, tc.want)
+			}
+		})
+	}
+
+	// empty/invalid input
+	if got := timeUntilReset(""); got != "" {
+		t.Errorf("timeUntilReset(\"\") = %q, want \"\"", got)
+	}
+	if got := timeUntilReset("not-iso"); got != "" {
+		t.Errorf("timeUntilReset(\"not-iso\") = %q, want \"\"", got)
+	}
+}
+
 func TestNewClient(t *testing.T) {
 	c := NewClient()
 	if c == nil {
