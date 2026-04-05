@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sethdeckard/atria/internal/codex"
+	"github.com/sethdeckard/atria/internal/model"
 	"github.com/sethdeckard/atria/internal/tui"
 )
 
@@ -207,7 +208,6 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 	name = tui.TruncateToWidth(name, paneWidth-1)
 	kind = tui.TruncateToWidth(kind, typeWidth-1)
 	binding = tui.TruncateToWidth(binding, bindingWidth-1)
-	statusText = tui.TruncateToWidth(statusText, statusWidth-1)
 	if cwdWidth > 0 {
 		cwd = tui.TruncateToWidth(cwd, cwdWidth)
 	}
@@ -215,22 +215,28 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 	nameCell := fmt.Sprintf("  %-*s", paneWidth, name)
 	typeCell := fmt.Sprintf("%-*s", typeWidth, kind)
 	bindingCell := fmt.Sprintf("%-*s", bindingWidth, binding)
-	statusCell := fmt.Sprintf("%-*s", statusWidth, statusText)
 	cwdCell := cwd
+
+	// Build quota suffix for Codex panes (only for idle/working; needs_input and error omit quota)
+	var quotaSuffix string
+	var quotaStyle lipgloss.Style
+	if pane.Kind == OccupantAgent && pane.AgentType == "codex" &&
+		pane.Status != model.StatusNeedsInput && pane.Status != model.StatusError {
+		suffix, style := formatQuotaSuffix(m.codexQuota, statusWidth-4)
+		quotaSuffix = suffix
+		quotaStyle = style
+	}
 
 	if selected {
 		typeStyled := tui.RenderSelectedText(typeCell)
 		if pane.Kind == OccupantAgent && pane.AgentType != "" {
 			typeStyled = tui.RenderSelectedAgentTypeCell(pane.AgentType, typeCell)
 		}
-		selectedStatus := tui.RenderSelectedText(statusCell)
-		if pane.Kind == OccupantAgent && pane.AgentType != "" {
-			selectedStatus = tui.RenderSelectedStatusCell(statusStyle, statusCell)
-		}
+		statusCell := renderStatusCell(statusText, statusStyle, quotaSuffix, quotaStyle, true, statusWidth)
 		return tui.RenderSelectedText(nameCell) +
 			typeStyled +
 			tui.RenderSelectedText(bindingCell) +
-			selectedStatus +
+			statusCell +
 			tui.RenderSelectedText(cwdCell)
 	}
 
@@ -240,11 +246,7 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 	} else {
 		typeStyled = tui.RenderDim(typeCell)
 	}
-	if pane.Kind == OccupantAgent && pane.AgentType != "" {
-		statusCell = statusStyle.Render(statusCell)
-	} else {
-		statusCell = tui.RenderDim(statusCell)
-	}
+	statusCell := renderStatusCell(statusText, statusStyle, quotaSuffix, quotaStyle, false, statusWidth)
 
 	if cwdCell != "" {
 		cwdCell = tui.RenderDim(cwdCell)
@@ -273,6 +275,17 @@ func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, statusWidth, 
 	}
 	if cwdWidth < 12 {
 		cwdWidth = 12
+	}
+	// Expansion pass: give status more room when quota is available
+	if m.hasCodexQuota() && m.codexQuota != nil {
+		targetStatus := 32
+		if width >= 110 {
+			targetStatus = 36
+		}
+		for statusWidth < targetStatus && cwdWidth > 12 {
+			statusWidth++
+			cwdWidth--
+		}
 	}
 	return paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth
 }
