@@ -767,6 +767,101 @@ func TestSelectingNormalPaneFromPickerLoadsIntoRightmostSlot(t *testing.T) {
 	}
 }
 
+func TestSelectingNewNormalPaneAddsNextEmptySlot(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+			{Slot: Slot2, PaneID: 12, Kind: OccupantNormal},
+		},
+	}
+	m := NewModel(nil, ctx)
+	updated, _ := m.Update(windowPanesLoadedMsg{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "Claude Code"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "shell"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+	})
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("enter"))
+	got := updated.(Model)
+
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 12, Kind: OccupantNormal},
+		{Slot: Slot3, PaneID: 13, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if got.mode != ModeList {
+		t.Fatalf("mode = %v, want %v after loading the new normal pane", got.mode, ModeList)
+	}
+}
+
+func TestSelectingNewNormalPaneReflowsWorkspaceToRightmostSlot(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID:       200,
+		WindowID:         7,
+		TabID:            70,
+		SlotBindings:     []SlotBinding{{Slot: Slot1, PaneID: 11, Kind: OccupantAgent}, {Slot: Slot2, PaneID: 12, Kind: OccupantNormal}},
+		WorkspacePaneIDs: []int{11, 12},
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "Claude Code"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "shell"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+	}
+	m := NewModel(client, ctx)
+	updated, _ := m.Update(windowPanesLoadedMsg{panes: client.panes})
+	m = updated.(Model)
+
+	updated, _ = m.Update(keyMsg("n"))
+	m = updated.(Model)
+	updated, _ = m.Update(keyMsg("j"))
+	m = updated.(Model)
+	updated, cmd := m.Update(keyMsg("enter"))
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("cmd = nil, want workspace sync command")
+	}
+	msg := runCmd(t, cmd)
+	updated, redraw := m.Update(msg)
+	got := updated.(Model)
+	if redraw == nil {
+		t.Fatal("redraw cmd = nil, want forced redraw after loading new normal pane")
+	}
+
+	wantSplits := []wezterm.SplitPaneOptions{
+		{PaneID: 11, Direction: "right", Percent: 67, MovePaneID: 12},
+		{PaneID: 12, Direction: "right", Percent: 50, MovePaneID: 13},
+	}
+	if !reflect.DeepEqual(client.splitPaneCalls, wantSplits) {
+		t.Fatalf("SplitPane() calls = %#v, want %#v", client.splitPaneCalls, wantSplits)
+	}
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		{Slot: Slot2, PaneID: 12, Kind: OccupantNormal},
+		{Slot: Slot3, PaneID: 13, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(got.bindings, wantBindings) {
+		t.Fatalf("bindings mismatch\nwant: %#v\ngot:  %#v", wantBindings, got.bindings)
+	}
+	if !reflect.DeepEqual(got.ctx.WorkspacePaneIDs, []int{11, 12, 13}) {
+		t.Fatalf("workspace pane ids = %v, want [11 12 13]", got.ctx.WorkspacePaneIDs)
+	}
+}
+
 func TestReplacingSlotMovesOldPaneToNewTab(t *testing.T) {
 	ctx := MonitorContext{
 		SelfPaneID: 200,

@@ -9,6 +9,7 @@ import (
 )
 
 const defaultMonitorPercent = 35
+const minimumStartupSlots = 2
 
 const (
 	monitorActivateAttempts   = 5
@@ -100,8 +101,14 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 	}
 
 	bindings = ShrinkBindings(bindings, paneIDSet(windowPanes))
-	if err := rebalanceWorkspace(runtime, starterPane.WindowID, bindingPaneIDs(bindings)); err != nil {
-		return fmt.Errorf("rebalance initial workspace: %w", err)
+	bindings, createdStartupNormals, err := ensureMinimumStartupBindings(runtime, starterPaneID, bindings)
+	if err != nil {
+		return fmt.Errorf("ensure minimum startup slots: %w", err)
+	}
+	if !createdStartupNormals {
+		if err := rebalanceWorkspace(runtime, starterPane.WindowID, bindingPaneIDs(bindings)); err != nil {
+			return fmt.Errorf("rebalance initial workspace: %w", err)
+		}
 	}
 	monitorAnchorPaneID := starterPaneID
 	if len(bindings) > 0 {
@@ -238,4 +245,34 @@ func buildMonitorCommand(prefix []string, encodedContext string) []string {
 	command = append(command, prefix...)
 	command = append(command, "--context-base64", encodedContext)
 	return command
+}
+
+func ensureMinimumStartupBindings(runtime wezTermRuntime, starterPaneID int, bindings []SlotBinding) ([]SlotBinding, bool, error) {
+	current := normalizeBindings(bindings)
+	created := false
+	for len(current) < minimumStartupSlots {
+		anchorPaneID := starterPaneID
+		if len(current) > 0 {
+			anchorPaneID = current[len(current)-1].PaneID
+		}
+		if anchorPaneID == 0 {
+			return nil, created, fmt.Errorf("workspace has no pane to split for startup slot creation")
+		}
+		paneID, err := runtime.SplitPane(wezterm.SplitPaneOptions{
+			PaneID:    anchorPaneID,
+			Direction: "right",
+			Percent:   50,
+		})
+		if err != nil {
+			return nil, created, fmt.Errorf("create startup normal pane from %d: %w", anchorPaneID, err)
+		}
+		current = append(current, SlotBinding{
+			Slot:   slotOrder[len(current)],
+			PaneID: paneID,
+			Kind:   OccupantNormal,
+		})
+		current = normalizeBindings(current)
+		created = true
+	}
+	return current, created, nil
 }

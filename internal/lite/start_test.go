@@ -149,6 +149,63 @@ func TestBuildMonitorCommandForcesColorInMonitorPane(t *testing.T) {
 	}
 }
 
+func TestStartCreatesSecondNormalSlotWhenOnlyStarterPaneExists(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "101")
+
+	runtime := &mockStartRuntime{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+		},
+		windowPanes: [][]wezterm.PaneInfo{
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+			},
+		},
+		splitPaneIDs: []int{202, 999},
+	}
+	installMockStartRuntime(t, runtime)
+
+	if err := Start(StartOptions{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if len(runtime.moveCalls) != 0 {
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want none", runtime.moveCalls)
+	}
+	if len(runtime.splitCalls) != 2 {
+		t.Fatalf("SplitPane() call count = %d, want 2", len(runtime.splitCalls))
+	}
+	wantWorkspaceSplit := wezterm.SplitPaneOptions{
+		PaneID:    101,
+		Direction: "right",
+		Percent:   50,
+	}
+	if !reflect.DeepEqual(runtime.splitCalls[0], wantWorkspaceSplit) {
+		t.Fatalf("workspace SplitPane() call = %#v, want %#v", runtime.splitCalls[0], wantWorkspaceSplit)
+	}
+	monitorSplit := runtime.splitCalls[1]
+	if monitorSplit.PaneID != 101 || monitorSplit.Direction != "top" || !monitorSplit.TopLevel {
+		t.Fatalf("monitor SplitPane() call = %#v, want top-level split from pane 101", monitorSplit)
+	}
+	ctx, err := decodeMonitorCommandContext(monitorSplit.Command)
+	if err != nil {
+		t.Fatalf("DecodeMonitorContext() error = %v", err)
+	}
+	wantBindings := []SlotBinding{
+		{Slot: Slot1, PaneID: 101, Kind: OccupantNormal},
+		{Slot: Slot2, PaneID: 202, Kind: OccupantNormal},
+	}
+	if !reflect.DeepEqual(ctx.SlotBindings, wantBindings) {
+		t.Fatalf("SlotBindings = %#v, want %#v", ctx.SlotBindings, wantBindings)
+	}
+	if !reflect.DeepEqual(ctx.WorkspacePaneIDs, []int{101, 202}) {
+		t.Fatalf("WorkspacePaneIDs = %v, want [101 202]", ctx.WorkspacePaneIDs)
+	}
+}
+
 func TestStartMovesOverflowPanesToNewTabInSameWindow(t *testing.T) {
 	t.Setenv("WEZTERM_PANE", "101")
 
@@ -472,6 +529,7 @@ type mockStartRuntime struct {
 	moveErr         error
 	splitCalls      []wezterm.SplitPaneOptions
 	splitPaneID     int
+	splitPaneIDs    []int
 	splitErr        error
 	adjustCalls     []adjustPaneCall
 	adjustErr       error
@@ -546,6 +604,11 @@ func (m *mockStartRuntime) SplitPane(opts wezterm.SplitPaneOptions) (int, error)
 	m.splitCalls = append(m.splitCalls, opts)
 	if m.splitErr != nil {
 		return 0, m.splitErr
+	}
+	if len(m.splitPaneIDs) > 0 {
+		paneID := m.splitPaneIDs[0]
+		m.splitPaneIDs = m.splitPaneIDs[1:]
+		return paneID, nil
 	}
 	if m.splitPaneID == 0 {
 		m.splitPaneID = 999

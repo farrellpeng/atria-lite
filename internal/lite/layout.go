@@ -29,8 +29,17 @@ func PlanInitialLayout(panes []CandidatePane) (bindings []SlotBinding, overflow 
 			selected = append(selected, pane)
 		}
 	}
+	targetSlots := len(slotOrder)
+	if len(agents) < minimumStartupSlots {
+		targetSlots = minimumStartupSlots
+	}
 	if len(selected) < len(slotOrder) && len(normals) > 0 {
-		selected = append(selected, normals[0])
+		for _, pane := range normals {
+			if len(selected) == targetSlots {
+				break
+			}
+			selected = append(selected, pane)
+		}
 	}
 
 	selectedIDs := make(map[int]bool, len(selected))
@@ -67,10 +76,7 @@ func PlanAgentLoad(bindings []SlotBinding, pane CandidatePane) ([]SlotBinding, b
 		return current, true
 	}
 
-	insertAt := len(current)
-	if len(current) > 0 && current[len(current)-1].Kind == OccupantNormal {
-		insertAt = len(current) - 1
-	}
+	insertAt := leadingAgents(current)
 
 	next := make([]SlotBinding, 0, len(current)+1)
 	next = append(next, current[:insertAt]...)
@@ -91,16 +97,6 @@ func PlanNormalLoad(bindings []SlotBinding, pane CandidatePane) ([]SlotBinding, 
 		return current, true
 	}
 
-	if len(current) > 0 && current[len(current)-1].Kind == OccupantNormal {
-		next := append([]SlotBinding(nil), current...)
-		next[len(next)-1] = SlotBinding{
-			Slot:   current[len(current)-1].Slot,
-			PaneID: pane.PaneID,
-			Kind:   OccupantNormal,
-		}
-		return next, false
-	}
-
 	next := append(append([]SlotBinding(nil), current...), SlotBinding{PaneID: pane.PaneID, Kind: OccupantNormal})
 	return reindex(next), false
 }
@@ -118,16 +114,14 @@ func ShrinkBindings(bindings []SlotBinding, livePaneIDs map[int]bool) []SlotBind
 
 func normalizeBindings(bindings []SlotBinding) []SlotBinding {
 	agents := make([]SlotBinding, 0, len(bindings))
-	slotsWithAgents := make(map[SlotID]bool, len(slotOrder))
+	normals := make([]SlotBinding, 0, len(bindings))
 	seenPaneIDs := make(map[int]bool, len(bindings))
-	var normal *SlotBinding
 
 	for _, slot := range slotOrder {
 		for _, binding := range bindings {
 			if binding.Slot != slot || binding.Kind != OccupantAgent {
 				continue
 			}
-			slotsWithAgents[slot] = true
 			if seenPaneIDs[binding.PaneID] {
 				break
 			}
@@ -139,31 +133,35 @@ func normalizeBindings(bindings []SlotBinding) []SlotBinding {
 		}
 	}
 
-	if len(agents) < len(slotOrder) {
-		for _, slot := range slotOrder {
-			if slotsWithAgents[slot] {
+	for _, slot := range slotOrder {
+		for _, binding := range bindings {
+			if binding.Slot != slot || binding.Kind != OccupantNormal || seenPaneIDs[binding.PaneID] {
 				continue
 			}
-			for _, binding := range bindings {
-				if binding.Slot != slot || binding.Kind != OccupantNormal || seenPaneIDs[binding.PaneID] {
-					continue
-				}
-				nb := SlotBinding{PaneID: binding.PaneID, Kind: OccupantNormal}
-				normal = &nb
+			if len(agents)+len(normals) >= len(slotOrder) {
 				break
 			}
-			if normal != nil {
-				break
-			}
+			normals = append(normals, SlotBinding{PaneID: binding.PaneID, Kind: OccupantNormal})
+			seenPaneIDs[binding.PaneID] = true
+			break
 		}
 	}
 
 	next := make([]SlotBinding, 0, len(slotOrder))
 	next = append(next, agents...)
-	if len(next) < len(slotOrder) && normal != nil {
-		next = append(next, *normal)
-	}
+	next = append(next, normals...)
 	return reindex(next)
+}
+
+func leadingAgents(bindings []SlotBinding) int {
+	count := 0
+	for _, binding := range bindings {
+		if binding.Kind != OccupantAgent {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 func reindex(bindings []SlotBinding) []SlotBinding {

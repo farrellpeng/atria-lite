@@ -77,7 +77,7 @@ func TestPlanInitialLayout(t *testing.T) {
 			wantOverflow: []int{10, 14},
 		},
 		{
-			name: "multiple normals keep only first normal",
+			name: "multiple normals fill the startup baseline before overflowing",
 			panes: []CandidatePane{
 				{PaneID: 40, Kind: OccupantNormal},
 				{PaneID: 10, Kind: OccupantNormal},
@@ -85,8 +85,9 @@ func TestPlanInitialLayout(t *testing.T) {
 			},
 			want: []SlotBinding{
 				{Slot: Slot1, PaneID: 40, Kind: OccupantNormal},
+				{Slot: Slot2, PaneID: 10, Kind: OccupantNormal},
 			},
-			wantOverflow: []int{10, 30},
+			wantOverflow: []int{30},
 		},
 		{
 			name: "preserves caller left-to-right order instead of pane ids",
@@ -275,7 +276,7 @@ func TestPlanNormalLoadUsesRightmostActiveSlot(t *testing.T) {
 			},
 		},
 		{
-			name: "existing normal is replaced in the rightmost active slot",
+			name: "existing normal keeps its slot while the next empty slot is available",
 			bindings: []SlotBinding{
 				{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
 				{Slot: Slot2, PaneID: 12, Kind: OccupantNormal},
@@ -283,7 +284,8 @@ func TestPlanNormalLoadUsesRightmostActiveSlot(t *testing.T) {
 			pane: CandidatePane{PaneID: 10, Kind: OccupantNormal},
 			want: []SlotBinding{
 				{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
-				{Slot: Slot2, PaneID: 10, Kind: OccupantNormal},
+				{Slot: Slot2, PaneID: 12, Kind: OccupantNormal},
+				{Slot: Slot3, PaneID: 10, Kind: OccupantNormal},
 			},
 		},
 		{
@@ -340,7 +342,7 @@ func TestNormalizeAndShrinkKeepCompactOrder(t *testing.T) {
 	wantNormalized := []SlotBinding{
 		{Slot: Slot1, PaneID: 10, Kind: OccupantAgent},
 		{Slot: Slot2, PaneID: 11, Kind: OccupantAgent},
-		{Slot: Slot3, PaneID: 30, Kind: OccupantNormal},
+		{Slot: Slot3, PaneID: 20, Kind: OccupantNormal},
 	}
 	if got := normalizeBindings(bindings); !reflect.DeepEqual(got, wantNormalized) {
 		t.Fatalf("normalizeBindings mismatch\nwant: %#v\ngot:  %#v", wantNormalized, got)
