@@ -130,6 +130,76 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 	if ctx.SelfPaneID != 0 {
 		t.Fatalf("SelfPaneID = %d, want 0 before monitor fills from env", ctx.SelfPaneID)
 	}
+	if !reflect.DeepEqual(runtime.sendTextCalls, []sendTextCall{{SessionID: "101", Text: "\f"}}) {
+		t.Fatalf("SendText() calls = %#v, want starter pane cleared once", runtime.sendTextCalls)
+	}
+}
+
+func TestStartResizesMonitorToFixedSevenRows(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "101")
+
+	runtime := &mockStartRuntime{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+		},
+		windowPanes: [][]wezterm.PaneInfo{
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 999, WindowID: 700, TabID: 701, Title: "atria-lite", Rows: 12},
+			},
+		},
+		splitPaneIDs: []int{202, 999},
+	}
+	installMockStartRuntime(t, runtime)
+
+	if err := Start(StartOptions{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	wantAdjust := []adjustPaneCall{
+		{PaneID: 999, Direction: "Up", Amount: 5},
+	}
+	if !reflect.DeepEqual(runtime.adjustCalls, wantAdjust) {
+		t.Fatalf("AdjustPaneSize() calls = %#v, want %#v", runtime.adjustCalls, wantAdjust)
+	}
+}
+
+func TestStartSkipsMonitorResizeWhenAlreadySevenRows(t *testing.T) {
+	t.Setenv("WEZTERM_PANE", "101")
+
+	runtime := &mockStartRuntime{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+		},
+		windowPanes: [][]wezterm.PaneInfo{
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+			},
+			{
+				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 999, WindowID: 700, TabID: 701, Title: "atria-lite", Rows: 7},
+			},
+		},
+		splitPaneIDs: []int{202, 999},
+	}
+	installMockStartRuntime(t, runtime)
+
+	if err := Start(StartOptions{}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if len(runtime.adjustCalls) != 0 {
+		t.Fatalf("AdjustPaneSize() calls = %#v, want none", runtime.adjustCalls)
+	}
 }
 
 func TestBuildMonitorCommandForcesColorInMonitorPane(t *testing.T) {
@@ -203,6 +273,9 @@ func TestStartCreatesSecondNormalSlotWhenOnlyStarterPaneExists(t *testing.T) {
 	}
 	if !reflect.DeepEqual(ctx.WorkspacePaneIDs, []int{101, 202}) {
 		t.Fatalf("WorkspacePaneIDs = %v, want [101 202]", ctx.WorkspacePaneIDs)
+	}
+	if !reflect.DeepEqual(runtime.sendTextCalls, []sendTextCall{{SessionID: "101", Text: "\f"}}) {
+		t.Fatalf("SendText() calls = %#v, want starter pane cleared once", runtime.sendTextCalls)
 	}
 }
 
@@ -533,6 +606,8 @@ type mockStartRuntime struct {
 	splitErr        error
 	adjustCalls     []adjustPaneCall
 	adjustErr       error
+	sendTextCalls   []sendTextCall
+	sendTextErr     error
 	activateCalls   []string
 	activateErrs    []error
 	activateErr     error
@@ -547,6 +622,11 @@ type adjustPaneCall struct {
 	PaneID    int
 	Direction string
 	Amount    int
+}
+
+type sendTextCall struct {
+	SessionID string
+	Text      string
 }
 
 func (m *mockStartRuntime) ListPanes() ([]wezterm.PaneInfo, error) {
@@ -623,6 +703,11 @@ func (m *mockStartRuntime) AdjustPaneSize(paneID int, direction string, amount i
 		Amount:    amount,
 	})
 	return m.adjustErr
+}
+
+func (m *mockStartRuntime) SendText(sessionID, text string) error {
+	m.sendTextCalls = append(m.sendTextCalls, sendTextCall{SessionID: sessionID, Text: text})
+	return m.sendTextErr
 }
 
 func (m *mockStartRuntime) ActivatePane(sessionID string) error {

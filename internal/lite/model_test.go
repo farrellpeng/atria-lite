@@ -137,23 +137,56 @@ func TestMonitorViewUsesAtriaStyleChromeAndSecondarySlots(t *testing.T) {
 		TabID:         70,
 		SlotBindings: []SlotBinding{
 			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+			{Slot: Slot2, PaneID: 12, Kind: OccupantAgent},
+			{Slot: Slot3, PaneID: 13, Kind: OccupantNormal},
 		},
 	}
 	m := NewModel(nil, ctx)
+	m.width = 140
 
 	updated, _ := m.Update(windowPanesLoadedMsg{
 		panes: []wezterm.PaneInfo{
 			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
-			{PaneID: 12, WindowID: 7, TabID: 70, Title: "shell"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "Claude Code"},
+			{PaneID: 13, WindowID: 7, TabID: 70, Title: "shell"},
 		},
 	})
 	got := updated.(Model)
 
 	view := got.View()
-	for _, want := range []string{"agents", "atria", "slot1", "enter:load", "n:normal panes", "r:refresh"} {
+	for _, want := range []string{"agents", "atria", "slots", "slot1", "slot2", "enter:load", "n:normal panes", "r:refresh"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() = %q, want to contain %q", view, want)
 		}
+	}
+	if strings.Contains(view, "slot3 pane 13") {
+		t.Fatalf("View() = %q, should not show fixed slot3 in the slot summary", view)
+	}
+	if strings.Contains(view, "agent pane(s) visible") {
+		t.Fatalf("View() = %q, should not show the visible-pane status summary in list mode", view)
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("View() = %q, want title bar plus content lines", view)
+	}
+	if strings.TrimSpace(lines[2]) == "" {
+		t.Fatalf("View() = %q, should not leave a blank line between the title bar and monitor content", view)
+	}
+	helpIndex := -1
+	for i, line := range lines {
+		if strings.Contains(line, "enter:load") {
+			helpIndex = i
+			break
+		}
+	}
+	if helpIndex < 1 {
+		t.Fatalf("View() = %q, want footer help to be present with a preceding divider", view)
+	}
+	if strings.Trim(strings.ReplaceAll(lines[helpIndex-1], "─", ""), " ") != "" {
+		t.Fatalf("View() = %q, want a divider line immediately above the footer help", view)
+	}
+	if !strings.HasPrefix(lines[helpIndex], "  enter:load") {
+		t.Fatalf("View() = %q, want footer help to be indented by two spaces", view)
 	}
 }
 
@@ -343,6 +376,7 @@ func TestMonitorAutoLoadsDiscoveredAgentIntoNextFreeSlot(t *testing.T) {
 		},
 	}
 	m := NewModel(nil, ctx)
+	m.width = 140
 
 	updated, _ := m.Update(windowPanesLoadedMsg{
 		panes: []wezterm.PaneInfo{
@@ -380,6 +414,7 @@ func TestMonitorRefreshDoesNotAutoReplaceWhenSlotsAreFull(t *testing.T) {
 		},
 	}
 	m := NewModel(nil, ctx)
+	m.width = 140
 
 	updated, _ := m.Update(windowPanesLoadedMsg{
 		panes: []wezterm.PaneInfo{
@@ -990,6 +1025,7 @@ func TestMonitorFiltersToWindowAndExcludesSelf(t *testing.T) {
 		TabID:         70,
 	}
 	m := NewModel(nil, ctx)
+	m.width = 140
 
 	updated, _ := m.Update(windowPanesLoadedMsg{
 		panes: []wezterm.PaneInfo{
@@ -1212,6 +1248,7 @@ func TestMonitorReclassifiesBindingsFromLivePanes(t *testing.T) {
 		},
 	}
 	m := NewModel(nil, ctx)
+	m.width = 140
 
 	updated, _ := m.Update(windowPanesLoadedMsg{
 		panes: []wezterm.PaneInfo{

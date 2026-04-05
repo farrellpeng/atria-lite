@@ -10,6 +10,7 @@ import (
 
 const defaultMonitorPercent = 35
 const minimumStartupSlots = 2
+const fixedMonitorRows = 7
 
 const (
 	monitorActivateAttempts   = 5
@@ -27,6 +28,7 @@ type wezTermRuntime interface {
 	ListWindowPanes(windowID int) ([]wezterm.PaneInfo, error)
 	ReadScreen(sessionID string, lines int) (string, error)
 	GetVar(sessionID, varName string) (string, error)
+	SendText(sessionID, text string) error
 	SplitPane(opts wezterm.SplitPaneOptions) (int, error)
 	AdjustPaneSize(paneID int, direction string, amount int) error
 	MovePaneToNewTab(paneID, windowID int) error
@@ -110,6 +112,9 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 			return fmt.Errorf("rebalance initial workspace: %w", err)
 		}
 	}
+	if err := clearStarterPaneIfReused(runtime, starterPaneID, bindings); err != nil {
+		return fmt.Errorf("clear starter pane %d: %w", starterPaneID, err)
+	}
 	monitorAnchorPaneID := starterPaneID
 	if len(bindings) > 0 {
 		boundPaneIDs := bindingPaneIDs(bindings)
@@ -158,6 +163,9 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 	})
 	if err != nil {
 		return fmt.Errorf("start monitor pane: %w", err)
+	}
+	if err := resizeMonitorToFixedRows(runtime, starterPane.WindowID, monitorPaneID, fixedMonitorRows); err != nil {
+		return fmt.Errorf("resize monitor pane %d: %w", monitorPaneID, err)
 	}
 	if err := activateMonitorPane(runtime, strconv.Itoa(monitorPaneID)); err != nil {
 		return fmt.Errorf("activate monitor pane %d: %w", monitorPaneID, err)
@@ -245,6 +253,59 @@ func buildMonitorCommand(prefix []string, encodedContext string) []string {
 	command = append(command, prefix...)
 	command = append(command, "--context-base64", encodedContext)
 	return command
+}
+
+func clearStarterPaneIfReused(runtime wezTermRuntime, starterPaneID int, bindings []SlotBinding) error {
+	if runtime == nil || starterPaneID == 0 {
+		return nil
+	}
+	for _, binding := range bindings {
+		if binding.PaneID == starterPaneID && binding.Kind == OccupantNormal {
+			if err := runtime.SendText(strconv.Itoa(starterPaneID), "\f"); err != nil {
+				return fmt.Errorf("send clear-screen to starter pane: %w", err)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func resizeMonitorToFixedRows(runtime wezTermRuntime, windowID, monitorPaneID, targetRows int) error {
+	if runtime == nil || windowID == 0 || monitorPaneID == 0 || targetRows <= 0 {
+		return nil
+	}
+
+	panes, err := runtime.ListWindowPanes(windowID)
+	if err != nil {
+		return fmt.Errorf("list window panes after monitor split: %w", err)
+	}
+
+	var monitorPane wezterm.PaneInfo
+	found := false
+	for _, pane := range panes {
+		if pane.PaneID == monitorPaneID {
+			monitorPane = pane
+			found = true
+			break
+		}
+	}
+	if !found || monitorPane.Rows <= 0 || monitorPane.Rows == targetRows {
+		return nil
+	}
+
+	direction := "Down"
+	amount := targetRows - monitorPane.Rows
+	if amount < 0 {
+		direction = "Up"
+		amount = -amount
+	}
+	if amount == 0 {
+		return nil
+	}
+	if err := runtime.AdjustPaneSize(monitorPaneID, direction, amount); err != nil {
+		return fmt.Errorf("adjust monitor pane to %d rows: %w", targetRows, err)
+	}
+	return nil
 }
 
 func ensureMinimumStartupBindings(runtime wezTermRuntime, starterPaneID int, bindings []SlotBinding) ([]SlotBinding, bool, error) {

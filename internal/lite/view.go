@@ -4,25 +4,57 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/sethdeckard/atria/internal/tui"
 )
 
 func (m Model) View() string {
-	sections := []string{tui.RenderTitleBar("agents", m.renderWidth())}
+	title := strings.TrimSuffix(tui.RenderTitleBar("agents", m.renderWidth()), "\n")
+	var body string
 
 	switch m.mode {
 	case ModeReplacePrompt:
-		sections = append(sections, strings.Join(m.viewReplacePrompt(), "\n"))
+		body = strings.Join(m.viewReplacePrompt(), "\n")
 	case ModeNormalPanePicker:
-		sections = append(sections, strings.Join(m.viewNormalPanePicker(), "\n"))
+		body = strings.Join(m.viewNormalPanePicker(), "\n")
 	default:
-		sections = append(sections, strings.Join(m.viewAgentList(), "\n"))
+		body = m.viewMonitorSplit()
+	}
+	return title + "\n" + body + "\n" + m.viewFooter()
+}
+
+func (m Model) viewMonitorSplit() string {
+	left := strings.Join(m.viewAgentList(), "\n")
+	right := strings.Join(m.viewSlotSummary(), "\n")
+	if right == "" || m.renderWidth() < 110 {
+		return left
 	}
 
-	sections = append(sections, strings.Join(m.viewSlotSummary(), "\n"))
-	sections = append(sections, m.viewFooter())
+	rightWidth := 28
+	if m.renderWidth() >= 140 {
+		rightWidth = 32
+	}
+	leftWidth := m.renderWidth() - rightWidth - 3
+	if leftWidth < 60 {
+		return left + "\n\n" + right
+	}
 
-	return strings.Join(sections, "\n\n")
+	leftLines := strings.Split(left, "\n")
+	rightLines := strings.Split(right, "\n")
+	leftHeight := len(leftLines)
+	rightHeight := len(rightLines)
+	if rightHeight > leftHeight {
+		leftHeight = rightHeight
+	}
+
+	leftStyle := lipgloss.NewStyle().Width(leftWidth)
+	rightStyle := lipgloss.NewStyle().Width(rightWidth)
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		leftStyle.Render(left),
+		"   ",
+		rightStyle.Render(right),
+	)
 }
 
 func (m Model) viewAgentList() []string {
@@ -70,6 +102,21 @@ func (m Model) viewNormalPanePicker() []string {
 func (m Model) viewSlotSummary() []string {
 	lines := []string{tui.RenderDim("slots")}
 	for _, slot := range slotOrder {
+		if slot == Slot3 {
+			continue
+		}
+		if binding, ok := m.bindingForSlot(slot); ok {
+			lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s pane %-4d %s", slot, binding.PaneID, binding.Kind)))
+			continue
+		}
+		lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s empty", slot)))
+	}
+	return lines
+}
+
+func (m Model) viewSlotSummaryLegacy() []string {
+	lines := []string{tui.RenderDim("slots")}
+	for _, slot := range slotOrder {
 		if binding, ok := m.bindingForSlot(slot); ok {
 			lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s pane %-4d %s", slot, binding.PaneID, binding.Kind)))
 			continue
@@ -80,17 +127,34 @@ func (m Model) viewSlotSummary() []string {
 }
 
 func (m Model) viewFooter() string {
-	help := " enter:load  n:normal panes  r:refresh"
+	help := "  enter:load  n:normal panes  r:refresh"
 	switch m.mode {
 	case ModeReplacePrompt:
-		help = " 1/2/3:replace  esc:back  r:refresh"
+		help = "  1/2/3:replace  esc:back  r:refresh"
 	case ModeNormalPanePicker:
-		help = " enter:load  esc:back  r:refresh"
+		help = "  enter:load  esc:back  r:refresh"
 	}
-	if m.statusText == "" {
-		return tui.RenderFooter(help)
+	divider := m.renderFooterDivider()
+	footer := tui.RenderDim(help)
+	if m.statusText == "" || m.shouldHideStatusText() {
+		return divider + "\n" + footer
 	}
-	return fmt.Sprintf("%s\n%s", tui.RenderDim("  "+m.statusText), tui.RenderFooter(help))
+	return fmt.Sprintf("%s\n%s\n%s", divider, tui.RenderDim("  "+m.statusText), footer)
+}
+
+func (m Model) renderFooterDivider() string {
+	sepWidth := m.renderWidth() - 2
+	if sepWidth < 1 {
+		sepWidth = 1
+	}
+	return tui.RenderDim("  " + strings.Repeat("\u2500", sepWidth))
+}
+
+func (m Model) shouldHideStatusText() bool {
+	if m.mode != ModeList {
+		return false
+	}
+	return m.statusText == fmt.Sprintf("%d agent pane(s) visible", len(m.agentPanes()))
 }
 
 func (m Model) slotForPane(paneID int) (SlotID, bool) {
