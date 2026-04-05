@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sethdeckard/atria/internal/codex"
 	"github.com/sethdeckard/atria/internal/tui"
 )
 
@@ -292,4 +293,54 @@ func paneTypeLabel(pane CandidatePane) string {
 		}
 	}
 	return "Normal"
+}
+
+func formatQuotaSuffix(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style) {
+	if qi == nil || maxChars < 8 {
+		return "", lipgloss.NewStyle()
+	}
+
+	primary := fmt.Sprintf(" \u00b7 %.0f%% (%s)", qi.PrimaryPct, qi.PrimaryReset)
+	primaryStyle := tui.QuotaPercentageStyle(qi.PrimaryPct)
+
+	if lipgloss.Width(primary) > maxChars {
+		shorter := fmt.Sprintf(" \u00b7 %.0f%%", qi.PrimaryPct)
+		if lipgloss.Width(shorter) <= maxChars {
+			return shorter, primaryStyle
+		}
+		return "", lipgloss.NewStyle()
+	}
+
+	if qi.SecondaryPct > 0 && qi.SecondaryReset != "" {
+		secondary := fmt.Sprintf(" \u00b7 %.0f%% (%s)", qi.SecondaryPct, qi.SecondaryReset)
+		combined := primary + secondary
+		if lipgloss.Width(combined) <= maxChars {
+			return combined, primaryStyle
+		}
+	}
+
+	return primary, primaryStyle
+}
+
+func renderStatusCell(statusText string, statusStyle lipgloss.Style,
+	quotaSuffix string, quotaStyle lipgloss.Style,
+	selected bool, cellWidth int) string {
+
+	quotaWidth := lipgloss.Width(quotaSuffix)
+	statusWidth := cellWidth - quotaWidth
+	if statusWidth < 0 {
+		// quotaSuffix alone exceeds cellWidth; truncate the suffix
+		quotaSuffix = tui.TruncateToWidth(quotaSuffix, cellWidth)
+		quotaWidth = lipgloss.Width(quotaSuffix)
+		statusWidth = 0
+		statusText = ""
+	} else if lipgloss.Width(statusText) > statusWidth {
+		statusText = tui.TruncateToWidth(statusText, statusWidth)
+	}
+
+	if !selected {
+		return statusStyle.Width(statusWidth).Render(statusText) + quotaStyle.Render(quotaSuffix)
+	}
+	return tui.WithSelectedBg(statusStyle).Bold(true).Width(statusWidth).Render(statusText) +
+		tui.WithSelectedBg(quotaStyle).Bold(true).Render(quotaSuffix)
 }
