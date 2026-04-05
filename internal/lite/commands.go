@@ -6,12 +6,18 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sethdeckard/atria/internal/model"
 	"github.com/sethdeckard/atria/internal/terminal"
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
 )
 
 const liteScreenReadLines = 40
-const liteRefreshInterval = 3 * time.Second
+
+const (
+	liteDiscoveryInterval = 3 * time.Second
+	liteStatusInterval    = 1 * time.Second
+	liteSpinnerInterval   = 100 * time.Millisecond
+)
 
 const (
 	workspaceSettleAttempts   = 5
@@ -21,8 +27,20 @@ const (
 var sleepForWorkspaceSettle = time.Sleep
 
 func refreshTickCmd() tea.Cmd {
-	return tea.Tick(liteRefreshInterval, func(time.Time) tea.Msg {
+	return tea.Tick(liteDiscoveryInterval, func(time.Time) tea.Msg {
 		return refreshTickMsg{}
+	})
+}
+
+func statusTickCmd() tea.Cmd {
+	return tea.Tick(liteStatusInterval, func(time.Time) tea.Msg {
+		return statusTickMsg{}
+	})
+}
+
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(liteSpinnerInterval, func(time.Time) tea.Msg {
+		return spinnerTickMsg{}
 	})
 }
 
@@ -46,6 +64,21 @@ func refreshWindowPanes(client windowPaneClient, ctx MonitorContext) tea.Cmd {
 		}
 		liteDebugf("refresh window=%d tab=%d self=%d panes=%v candidates=%v", ctx.WindowID, ctx.TabID, ctx.SelfPaneID, summarizePaneInfos(panes), summarizeCandidates(candidates))
 		return candidatePanesLoadedMsg{panes: candidates}
+	}
+}
+
+func refreshPaneStatuses(client windowPaneClient, panes []CandidatePane) tea.Cmd {
+	if client == nil {
+		return nil
+	}
+
+	agentPanes := make([]CandidatePane, len(panes))
+	copy(agentPanes, panes)
+	return func() tea.Msg {
+		for i, pane := range agentPanes {
+			agentPanes[i] = refreshCandidatePane(client, pane)
+		}
+		return paneStatusesLoadedMsg{panes: agentPanes}
 	}
 }
 
@@ -208,20 +241,58 @@ func classifyCandidatePane(client windowPaneClient, pane wezterm.PaneInfo) Candi
 		Kind:     OccupantNormal,
 	}
 
-	agentType := terminal.DetectAgent(pane.Title)
-	if agentType == "" && client != nil {
-		content, err := client.ReadScreen(strconv.Itoa(pane.PaneID), liteScreenReadLines)
+	var content string
+	if client != nil {
+		screen, err := client.ReadScreen(strconv.Itoa(pane.PaneID), liteScreenReadLines)
 		if err == nil {
-			agentType = terminal.InferAgentFromScreen(content)
+			content = screen
 		}
+	}
+
+	agentType := terminal.DetectAgent(pane.Title)
+	if agentType == "" && content != "" {
+		agentType = terminal.InferAgentFromScreen(content)
 	}
 	if agentType != "" {
 		candidate.Kind = OccupantAgent
 		candidate.AgentType = agentType
 		candidate.CWD = discoverPaneCWD(client, pane)
+		candidate.Activity = terminal.ExtractActivity(pane.Title)
+		if isGenericPaneTitle(candidate.Activity, candidate.CWD) {
+			candidate.Activity = ""
+		}
+		if content != "" {
+			status, matchLine := terminal.ClassifyScreen(content, agentType)
+			candidate.Status = status
+			if status == model.StatusNeedsInput || status == model.StatusError {
+				candidate.Attention = matchLine
+			}
+		}
 	}
 
 	return candidate
+}
+
+func refreshCandidatePane(client windowPaneClient, pane CandidatePane) CandidatePane {
+	if client == nil || pane.Kind != OccupantAgent || pane.AgentType == "" {
+		return pane
+	}
+
+	content, err := client.ReadScreen(strconv.Itoa(pane.PaneID), liteScreenReadLines)
+	if err != nil || content == "" {
+		return pane
+	}
+
+	status, matchLine := terminal.ClassifyScreen(content, pane.AgentType)
+	if status == "" {
+		return pane
+	}
+	pane.Status = status
+	pane.Attention = ""
+	if status == model.StatusNeedsInput || status == model.StatusError {
+		pane.Attention = matchLine
+	}
+	return pane
 }
 
 func discoverPaneCWD(client windowPaneClient, pane wezterm.PaneInfo) string {

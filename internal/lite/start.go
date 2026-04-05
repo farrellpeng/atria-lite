@@ -233,7 +233,8 @@ func buildMonitorCommand(prefix []string, encodedContext string) []string {
 		prefix = []string{"atria-lite", "monitor"}
 	}
 
-	command := make([]string, 0, len(prefix)+2)
+	command := make([]string, 0, len(prefix)+6)
+	command = append(command, "env", "-u", "NO_COLOR", "CLICOLOR_FORCE=1")
 	command = append(command, prefix...)
 	command = append(command, "--context-base64", encodedContext)
 	return command

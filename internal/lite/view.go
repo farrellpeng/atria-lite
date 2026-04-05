@@ -119,27 +119,30 @@ func (m Model) renderWidth() int {
 }
 
 func (m Model) renderColumnHeaders() string {
-	paneWidth, typeWidth, bindingWidth, cwdWidth := m.columnWidths()
+	paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth := m.columnWidths()
 	line := fmt.Sprintf(
-		"  %-*s%-*s%-*s%s",
+		"  %-*s%-*s%-*s%-*s%s",
 		paneWidth, "pane",
 		typeWidth, "type",
 		bindingWidth, "binding",
+		statusWidth, "status",
 		"cwd",
 	)
-	maxWidth := 2 + paneWidth + typeWidth + bindingWidth + cwdWidth
+	maxWidth := 2 + paneWidth + typeWidth + bindingWidth + statusWidth + cwdWidth
 	return tui.RenderDim(tui.TruncateToWidth(line, maxWidth))
 }
 
 func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) string {
-	paneWidth, typeWidth, bindingWidth, cwdWidth := m.columnWidths()
+	paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth := m.columnWidths()
 	name := paneLabel(pane)
 	kind := paneTypeLabel(pane)
+	statusText, statusStyle := tui.FormatAgentStatus(pane.Status, pane.Activity, pane.Attention, m.spinnerFrame)
 	cwd := pane.CWD
 
 	name = tui.TruncateToWidth(name, paneWidth-1)
 	kind = tui.TruncateToWidth(kind, typeWidth-1)
 	binding = tui.TruncateToWidth(binding, bindingWidth-1)
+	statusText = tui.TruncateToWidth(statusText, statusWidth-1)
 	if cwdWidth > 0 {
 		cwd = tui.TruncateToWidth(cwd, cwdWidth)
 	}
@@ -147,6 +150,7 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 	nameCell := fmt.Sprintf("  %-*s", paneWidth, name)
 	typeCell := fmt.Sprintf("%-*s", typeWidth, kind)
 	bindingCell := fmt.Sprintf("%-*s", bindingWidth, binding)
+	statusCell := fmt.Sprintf("%-*s", statusWidth, statusText)
 	cwdCell := cwd
 
 	if selected {
@@ -154,9 +158,14 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 		if pane.Kind == OccupantAgent && pane.AgentType != "" {
 			typeStyled = tui.RenderSelectedAgentTypeCell(pane.AgentType, typeCell)
 		}
+		selectedStatus := tui.RenderSelectedText(statusCell)
+		if pane.Kind == OccupantAgent && pane.AgentType != "" {
+			selectedStatus = tui.RenderSelectedStatusCell(statusStyle, statusCell)
+		}
 		return tui.RenderSelectedText(nameCell) +
 			typeStyled +
 			tui.RenderSelectedText(bindingCell) +
+			selectedStatus +
 			tui.RenderSelectedText(cwdCell)
 	}
 
@@ -166,23 +175,41 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 	} else {
 		typeStyled = tui.RenderDim(typeCell)
 	}
+	if pane.Kind == OccupantAgent && pane.AgentType != "" {
+		statusCell = statusStyle.Render(statusCell)
+	} else {
+		statusCell = tui.RenderDim(statusCell)
+	}
 
 	if cwdCell != "" {
 		cwdCell = tui.RenderDim(cwdCell)
 	}
-	return nameCell + typeStyled + bindingCell + cwdCell
+	return nameCell + typeStyled + bindingCell + statusCell + cwdCell
 }
 
-func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, cwdWidth int) {
+func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth int) {
 	width := m.renderWidth()
-	paneWidth = 20
-	typeWidth = 12
-	bindingWidth = 11
-	cwdWidth = width - 2 - paneWidth - typeWidth - bindingWidth
+	paneWidth = 18
+	typeWidth = 10
+	bindingWidth = 10
+	statusWidth = 24
+	if width >= 110 {
+		paneWidth = 24
+		statusWidth = 28
+	}
+	cwdWidth = width - 2 - paneWidth - typeWidth - bindingWidth - statusWidth
+	for cwdWidth < 12 && statusWidth > 18 {
+		statusWidth--
+		cwdWidth++
+	}
+	for cwdWidth < 12 && paneWidth > 16 {
+		paneWidth--
+		cwdWidth++
+	}
 	if cwdWidth < 12 {
 		cwdWidth = 12
 	}
-	return paneWidth, typeWidth, bindingWidth, cwdWidth
+	return paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth
 }
 
 func paneTypeLabel(pane CandidatePane) string {

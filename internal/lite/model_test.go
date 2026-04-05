@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sethdeckard/atria/internal/model"
 	"github.com/sethdeckard/atria/internal/terminal/wezterm"
+	"github.com/sethdeckard/atria/internal/tui"
 )
 
 func TestRefreshUsesDetectAgentThenScreenFallback(t *testing.T) {
@@ -37,8 +38,8 @@ func TestRefreshUsesDetectAgentThenScreenFallback(t *testing.T) {
 	updated, _ := m.Update(msg)
 	got := updated.(Model)
 
-	if len(client.readScreenCalls) != 1 || client.readScreenCalls[0] != "12" {
-		t.Fatalf("ReadScreen() calls = %#v, want fallback for pane 12 only", client.readScreenCalls)
+	if !reflect.DeepEqual(client.readScreenCalls, []string{"11", "12"}) {
+		t.Fatalf("ReadScreen() calls = %#v, want reads for agent status and screen fallback panes", client.readScreenCalls)
 	}
 	if len(got.panes) != 2 {
 		t.Fatalf("panes len = %d, want 2", len(got.panes))
@@ -76,6 +77,55 @@ func TestRefreshBuildsDisplayRowsFromDiscoveredCWD(t *testing.T) {
 
 	if !strings.Contains(got.View(), "/projects/alpha") {
 		t.Fatalf("View() = %q, want discovered CWD to appear in display rows", got.View())
+	}
+}
+
+func TestRefreshBuildsDynamicStatusRowsFromScreen(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: ": atria", CWD: "/home/farrell/project/atria/"},
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "✳ Read project README file", CWD: "/home/farrell/project/atria/"},
+		},
+		readScreens: map[int]string{
+			11: "OpenAI Codex\n• Working (3m 09s • esc to interrupt)\n› Improve documentation in @filename",
+			12: "Claude Code v2.1.92\n? for shortcuts\n❯ /review",
+		},
+		getVars: map[int]string{
+			11: "/home/farrell/project/atria/",
+			12: "/home/farrell/project/atria/",
+		},
+	}
+	m := NewModel(client, ctx)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+
+	msg := runCmd(t, m.Init())
+	updated, _ = m.Update(msg)
+	got := updated.(Model)
+
+	if got.panes[0].Status != model.StatusWorking {
+		t.Fatalf("first pane status = %q, want working", got.panes[0].Status)
+	}
+	if got.panes[1].Status != model.StatusIdle {
+		t.Fatalf("second pane status = %q, want idle", got.panes[1].Status)
+	}
+	if got.panes[1].Activity != "Read project README file" {
+		t.Fatalf("second pane activity = %q, want extracted activity", got.panes[1].Activity)
+	}
+
+	view := got.View()
+	for _, want := range []string{"status", "Codex", "working...", "Read project README file"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() = %q, want to contain %q", view, want)
+		}
+	}
+	if strings.Contains(view, ": atria") {
+		t.Fatalf("View() = %q, should not keep decorated generic project title", view)
 	}
 }
 
@@ -131,9 +181,12 @@ func TestInitSchedulesRefreshAndAutoRefreshTick(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("cmd = nil, want scheduled auto-refresh tick")
 	}
-	tickMsg := runCmd(t, cmd)
-	if _, ok := tickMsg.(refreshTickMsg); !ok {
-		t.Fatalf("tick msg = %#v, want refreshTickMsg", tickMsg)
+	msgs := runCmds(t, cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("msgs len = %d, want 1 discovery tick", len(msgs))
+	}
+	if _, ok := msgs[0].(refreshTickMsg); !ok {
+		t.Fatalf("tick msg = %#v, want refreshTickMsg", msgs[0])
 	}
 }
 
@@ -167,10 +220,116 @@ func TestRefreshTickTriggersWindowRefreshAndReschedulesTick(t *testing.T) {
 	if next == nil {
 		t.Fatal("next cmd = nil, want next auto-refresh tick")
 	}
-	nextMsg := runCmd(t, next)
-	if _, ok := nextMsg.(refreshTickMsg); !ok {
-		t.Fatalf("next tick msg = %#v, want refreshTickMsg", nextMsg)
+	msgs := runCmds(t, next)
+	if len(msgs) != 1 {
+		t.Fatalf("msgs len = %d, want 1 discovery tick", len(msgs))
 	}
+	if _, ok := msgs[0].(refreshTickMsg); !ok {
+		t.Fatalf("next tick msg = %#v, want refreshTickMsg", msgs[0])
+	}
+}
+
+func TestInitSchedulesStatusAndSpinnerTicksForWorkingAgent(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+		SlotBindings: []SlotBinding{
+			{Slot: Slot1, PaneID: 11, Kind: OccupantAgent},
+		},
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+		},
+		readScreens: map[int]string{
+			11: "OpenAI Codex\n• Working (30s • esc to interrupt)\n› Review changes",
+		},
+	}
+	m := NewModel(client, ctx)
+
+	msg := runCmd(t, m.Init())
+	updated, cmd := m.Update(msg)
+	m = updated.(Model)
+
+	msgs := runCmds(t, cmd)
+	assertMsgTypes(t, msgs, refreshTickMsg{}, statusTickMsg{}, spinnerTickMsg{})
+	if !m.statusTickActive {
+		t.Fatal("statusTickActive = false, want true after scheduling status polling")
+	}
+	if !m.spinnerTickActive {
+		t.Fatal("spinnerTickActive = false, want true after scheduling spinner")
+	}
+}
+
+func TestStatusTickRefreshesStatusesAndReschedulesStatusTick(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+	}
+	client := &stubWindowPaneClient{
+		readScreens: map[int]string{
+			11: "OpenAI Codex\n• Working (30s • esc to interrupt)\n› Review changes",
+		},
+	}
+	m := NewModel(client, ctx)
+	m.panes = []CandidatePane{{
+		PaneID:    11,
+		WindowID:  7,
+		TabID:     70,
+		Title:     "codex",
+		CWD:       "/home/farrell/project/atria/",
+		Kind:      OccupantAgent,
+		AgentType: model.AgentCodex,
+		Status:    model.StatusIdle,
+	}}
+
+	updated, cmd := m.Update(statusTickMsg{})
+	m = updated.(Model)
+	if m.statusTickActive {
+		t.Fatal("statusTickActive = true, want false while screen read command is in flight")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want status refresh command")
+	}
+
+	msg := runCmd(t, cmd)
+	statusMsg, ok := msg.(paneStatusesLoadedMsg)
+	if !ok {
+		t.Fatalf("msg = %#v, want paneStatusesLoadedMsg", msg)
+	}
+
+	updated, next := m.Update(statusMsg)
+	got := updated.(Model)
+	if got.panes[0].Status != model.StatusWorking {
+		t.Fatalf("pane status = %q, want working", got.panes[0].Status)
+	}
+	msgs := runCmds(t, next)
+	assertMsgTypes(t, msgs, statusTickMsg{}, spinnerTickMsg{})
+}
+
+func TestSpinnerTickAdvancesWhileWorking(t *testing.T) {
+	m := NewModel(nil, MonitorContext{SelfPaneID: 200, WindowID: 7, TabID: 70})
+	m.panes = []CandidatePane{{
+		PaneID:    11,
+		Kind:      OccupantAgent,
+		AgentType: model.AgentCodex,
+		Status:    model.StatusWorking,
+	}}
+	m.spinnerTickActive = true
+
+	updated, cmd := m.Update(spinnerTickMsg{})
+	got := updated.(Model)
+
+	if got.spinnerFrame != 1 {
+		t.Fatalf("spinnerFrame = %d, want 1", got.spinnerFrame)
+	}
+	if !got.spinnerTickActive {
+		t.Fatal("spinnerTickActive = false, want spinner to keep running")
+	}
+	msgs := runCmds(t, cmd)
+	assertMsgTypes(t, msgs, spinnerTickMsg{})
 }
 
 func TestMonitorAutoLoadsDiscoveredAgentIntoNextFreeSlot(t *testing.T) {
@@ -1114,6 +1273,20 @@ func TestPaneLabelUsesAgentNameForGenericProjectTitle(t *testing.T) {
 	}
 }
 
+func TestPaneLabelUsesAgentNameForDecoratedGenericProjectTitle(t *testing.T) {
+	pane := CandidatePane{
+		PaneID:    12,
+		Title:     ": atria",
+		CWD:       "/home/farrell/project/atria/",
+		Kind:      OccupantAgent,
+		AgentType: model.AgentCodex,
+	}
+
+	if got, want := paneLabel(pane), "Codex"; got != want {
+		t.Fatalf("paneLabel() = %q, want %q", got, want)
+	}
+}
+
 func TestPaneLabelKeepsNonGenericActivityTitle(t *testing.T) {
 	pane := CandidatePane{
 		PaneID:    14,
@@ -1128,12 +1301,70 @@ func TestPaneLabelKeepsNonGenericActivityTitle(t *testing.T) {
 	}
 }
 
+func TestSelectedAgentRowKeepsStatusColor(t *testing.T) {
+	m := NewModel(nil, MonitorContext{SelfPaneID: 200, WindowID: 7, TabID: 70})
+	m.width = 120
+	pane := CandidatePane{
+		PaneID:    11,
+		CWD:       "/home/farrell/project/atria/",
+		Kind:      OccupantAgent,
+		AgentType: model.AgentCodex,
+		Status:    model.StatusWorking,
+	}
+
+	row := m.renderPaneRow(pane, "slot1", true)
+	_, _, _, statusWidth, _ := m.columnWidths()
+	statusText, statusStyle := tui.FormatAgentStatus(pane.Status, pane.Activity, pane.Attention, m.spinnerFrame)
+	statusCell := fmt.Sprintf("%-*s", statusWidth, tui.TruncateToWidth(statusText, statusWidth-1))
+	want := tui.RenderSelectedStatusCell(statusStyle, statusCell)
+
+	if !strings.Contains(row, want) {
+		t.Fatalf("row = %q, want selected status cell %q", row, want)
+	}
+}
+
 func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("cmd = nil, want refresh command")
 	}
 	return cmd()
+}
+
+func runCmds(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	msg := runCmd(t, cmd)
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		out := make([]tea.Msg, 0, len(batch))
+		for _, subcmd := range batch {
+			if subcmd == nil {
+				continue
+			}
+			out = append(out, subcmd())
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+func assertMsgTypes(t *testing.T, msgs []tea.Msg, wants ...tea.Msg) {
+	t.Helper()
+	if len(msgs) != len(wants) {
+		t.Fatalf("msgs len = %d, want %d (%#v)", len(msgs), len(wants), msgs)
+	}
+	for _, want := range wants {
+		wantType := reflect.TypeOf(want)
+		found := false
+		for _, msg := range msgs {
+			if reflect.TypeOf(msg) == wantType {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("msgs = %#v, want type %v", msgs, wantType)
+		}
+	}
 }
 
 type stubWindowPaneClient struct {

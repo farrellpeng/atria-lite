@@ -1,6 +1,7 @@
 package lite
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -94,14 +95,15 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 		t.Fatalf("ActivatePane() calls = %v, want [999]", runtime.activateCalls)
 	}
 
-	if len(got.Command) != 4 {
-		t.Fatalf("SplitPane() Command = %v, want 4 args", got.Command)
+	if len(got.Command) != 8 {
+		t.Fatalf("SplitPane() Command = %v, want 8 args", got.Command)
 	}
-	if !reflect.DeepEqual(got.Command[:3], []string{"atria-lite", "monitor", "--context-base64"}) {
-		t.Fatalf("SplitPane() Command prefix = %v, want atria-lite monitor --context-base64", got.Command[:3])
+	wantCommandPrefix := []string{"env", "-u", "NO_COLOR", "CLICOLOR_FORCE=1", "atria-lite", "monitor", "--context-base64"}
+	if !reflect.DeepEqual(got.Command[:7], wantCommandPrefix) {
+		t.Fatalf("SplitPane() Command prefix = %v, want %v", got.Command[:7], wantCommandPrefix)
 	}
 
-	ctx, err := DecodeMonitorContext(got.Command[3])
+	ctx, err := decodeMonitorCommandContext(got.Command)
 	if err != nil {
 		t.Fatalf("DecodeMonitorContext() error = %v", err)
 	}
@@ -127,6 +129,23 @@ func TestStartSplitsTopMonitorWithTopLevelPercent(t *testing.T) {
 	}
 	if ctx.SelfPaneID != 0 {
 		t.Fatalf("SelfPaneID = %d, want 0 before monitor fills from env", ctx.SelfPaneID)
+	}
+}
+
+func TestBuildMonitorCommandForcesColorInMonitorPane(t *testing.T) {
+	got := buildMonitorCommand([]string{"/tmp/atria-lite", "monitor"}, "encoded")
+	want := []string{
+		"env",
+		"-u",
+		"NO_COLOR",
+		"CLICOLOR_FORCE=1",
+		"/tmp/atria-lite",
+		"monitor",
+		"--context-base64",
+		"encoded",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildMonitorCommand() = %v, want %v", got, want)
 	}
 }
 
@@ -259,7 +278,7 @@ func TestStartKeepsStarterPaneWhenItIsPartOfWorkspace(t *testing.T) {
 	if runtime.splitCalls[1].PaneID != 201 || runtime.splitCalls[1].Direction != "top" || !runtime.splitCalls[1].TopLevel {
 		t.Fatalf("monitor SplitPane() call = %#v, want top-level split from pane 201", runtime.splitCalls[1])
 	}
-	ctx, err := DecodeMonitorContext(runtime.splitCalls[1].Command[3])
+	ctx, err := decodeMonitorCommandContext(runtime.splitCalls[1].Command)
 	if err != nil {
 		t.Fatalf("DecodeMonitorContext() error = %v", err)
 	}
@@ -368,7 +387,7 @@ func TestStartUsesScreenFallbackToDetectAgents(t *testing.T) {
 	if runtime.splitCalls[2].PaneID != 201 {
 		t.Fatalf("monitor SplitPane() PaneID = %d, want 201", runtime.splitCalls[2].PaneID)
 	}
-	ctx, err := DecodeMonitorContext(runtime.splitCalls[2].Command[3])
+	ctx, err := decodeMonitorCommandContext(runtime.splitCalls[2].Command)
 	if err != nil {
 		t.Fatalf("DecodeMonitorContext() error = %v", err)
 	}
@@ -432,6 +451,13 @@ func TestStartRetriesMonitorActivation(t *testing.T) {
 			t.Fatalf("ActivatePane() call = %q, want 999", call)
 		}
 	}
+}
+
+func decodeMonitorCommandContext(command []string) (MonitorContext, error) {
+	if len(command) == 0 {
+		return MonitorContext{}, fmt.Errorf("decode monitor context: empty command")
+	}
+	return DecodeMonitorContext(command[len(command)-1])
 }
 
 type mockStartRuntime struct {

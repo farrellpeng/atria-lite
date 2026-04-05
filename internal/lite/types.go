@@ -31,6 +31,9 @@ type CandidatePane struct {
 	CWD       string
 	Kind      OccupantKind
 	AgentType model.AgentType
+	Status    model.AgentStatus
+	Activity  string
+	Attention string
 }
 
 type SlotBinding struct {

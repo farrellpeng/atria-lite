@@ -679,38 +679,7 @@ func formatNarrowSelectedRow(r projectRow, lp layoutPolicy, spinnerFrame int) st
 }
 
 func formatStatus(s *model.AgentSession, spinnerFrame int) (string, lipgloss.Style) {
-	switch s.Status {
-	case model.StatusNeedsInput:
-		text := "\u26a0 " + s.Attention
-		if text == "\u26a0 " {
-			text = "\u26a0 needs input"
-		}
-		return text, statusNeedsInputStyle
-	case model.StatusWorking:
-		spin := spinnerFrames[spinnerFrame%len(spinnerFrames)]
-		text := spin + " "
-		if s.Activity != "" {
-			text += s.Activity
-		} else {
-			text += "working..."
-		}
-		return text, statusWorkingStyle
-	case model.StatusIdle:
-		text := "\u25cf idle"
-		if s.Activity != "" {
-			text = "\u25cf " + s.Activity
-		}
-		return text, statusIdleStyle
-	case model.StatusError:
-		text := "\u2717 error"
-		if s.Attention != "" {
-			text = "\u2717 " + s.Attention
-		}
-		return text, statusErrorStyle
-	default:
-		spin := spinnerFrames[spinnerFrame%len(spinnerFrames)]
-		return spin + " working...", statusWorkingStyle
-	}
+	return FormatAgentStatus(s.Status, s.Activity, s.Attention, spinnerFrame)
 }
 
 func relativeTime(t time.Time) string {

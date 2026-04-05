@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sethdeckard/atria/internal/model"
@@ -42,9 +43,13 @@ type Model struct {
 	cursor      int
 	replacePane CandidatePane
 
-	statusText string
-	width      int
-	height     int
+	statusText   string
+	width        int
+	height       int
+	spinnerFrame int
+
+	statusTickActive  bool
+	spinnerTickActive bool
 
 	missingPaneGrace map[int]int
 }
@@ -97,28 +102,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusText = m.modeStatusText()
 		if autoloadedPane != nil {
 			if cmd := syncWorkspaceBindings(m.client, m.ctx, m.ctx.WorkspacePaneIDs, nextBindings, fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))); cmd != nil {
-				return m, tea.Batch(cmd, refreshTickCmd())
+				return m, tea.Batch(cmd, refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick())
 			}
 			m.applyBindings(nextBindings)
 			m.statusText = fmt.Sprintf("Loaded %s", paneLabel(*autoloadedPane))
 		} else if recoverWorkspace != nil {
 			if cmd := syncWorkspaceBindings(m.client, m.ctx, recoverWorkspace, nextBindings, "Restoring workspace"); cmd != nil {
-				return m, tea.Batch(cmd, refreshTickCmd())
+				return m, tea.Batch(cmd, refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick())
 			}
 		}
-		return m, refreshTickCmd()
+		return m, tea.Batch(refreshTickCmd(), m.ensureStatusTick(), m.ensureSpinnerTick())
 	case windowPanesLoadFailedMsg:
 		m.statusText = fmt.Sprintf("Refresh failed: %v", msg.err)
 		return m, refreshTickCmd()
 	case refreshTickMsg:
 		return m, refreshWindowPanes(m.client, m.ctx)
+	case statusTickMsg:
+		m.statusTickActive = false
+		if !m.hasAgentPanes() {
+			return m, nil
+		}
+		return m, refreshPaneStatuses(m.client, m.panes)
+	case paneStatusesLoadedMsg:
+		m.panes = msg.panes
+		m.syncReplacePrompt()
+		m.clampCursor()
+		return m, tea.Batch(m.ensureStatusTick(), m.ensureSpinnerTick())
+	case paneStatusesLoadFailedMsg:
+		return m, m.ensureStatusTick()
+	case spinnerTickMsg:
+		m.spinnerTickActive = false
+		if !m.hasWorkingPanes() {
+			return m, nil
+		}
+		m.spinnerFrame++
+		return m, m.ensureSpinnerTick()
 	case slotActionCompletedMsg:
 		m.mode = ModeList
 		m.replacePane = CandidatePane{}
 		m.applyBindings(msg.bindings)
 		m.clampCursor()
 		m.statusText = msg.statusText
-		return m, tea.Batch(tea.ClearScreen, tea.WindowSize())
+		return m, tea.Batch(tea.ClearScreen, tea.WindowSize(), m.ensureStatusTick(), m.ensureSpinnerTick())
 	case slotActionFailedMsg:
 		m.statusText = fmt.Sprintf("Action failed: %v", msg.err)
 	case tea.KeyMsg:
@@ -459,6 +484,35 @@ func (m Model) normalPanes() []CandidatePane {
 	return filterPanesByKind(m.panes, OccupantNormal)
 }
 
+func (m Model) hasAgentPanes() bool {
+	return len(m.agentPanes()) > 0
+}
+
+func (m Model) hasWorkingPanes() bool {
+	for _, pane := range m.agentPanes() {
+		if pane.Status == model.StatusWorking {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) ensureStatusTick() tea.Cmd {
+	if m.statusTickActive || !m.hasAgentPanes() {
+		return nil
+	}
+	m.statusTickActive = true
+	return statusTickCmd()
+}
+
+func (m *Model) ensureSpinnerTick() tea.Cmd {
+	if m.spinnerTickActive || !m.hasWorkingPanes() {
+		return nil
+	}
+	m.spinnerTickActive = true
+	return spinnerTickCmd()
+}
+
 func filterPanesByKind(panes []CandidatePane, kind OccupantKind) []CandidatePane {
 	out := make([]CandidatePane, 0, len(panes))
 	for _, pane := range panes {
@@ -470,6 +524,12 @@ func filterPanesByKind(panes []CandidatePane, kind OccupantKind) []CandidatePane
 }
 
 func paneLabel(pane CandidatePane) string {
+	if pane.Kind == OccupantAgent && pane.AgentType != "" {
+		activity := strings.TrimSpace(pane.Activity)
+		if activity != "" && !isGenericPaneTitle(activity, pane.CWD) {
+			return activity
+		}
+	}
 	label := strings.TrimSpace(pane.Title)
 	if pane.Kind == OccupantAgent && pane.AgentType != "" {
 		preferred := preferredAgentPaneLabel(pane.AgentType)
@@ -502,7 +562,7 @@ func preferredAgentPaneLabel(agentType model.AgentType) string {
 }
 
 func isGenericPaneTitle(title, cwd string) bool {
-	trimmed := strings.TrimSpace(title)
+	trimmed := normalizePaneTitle(title)
 	if trimmed == "" {
 		return true
 	}
@@ -516,6 +576,22 @@ func isGenericPaneTitle(title, cwd string) bool {
 	}
 	base := filepath.Base(strings.TrimSuffix(strings.TrimSpace(cwd), "/"))
 	return base != "." && base != "/" && strings.EqualFold(trimmed, base)
+}
+
+func normalizePaneTitle(title string) string {
+	trimmed := strings.TrimSpace(title)
+	return strings.TrimSpace(strings.TrimLeftFunc(trimmed, func(r rune) bool {
+		if unicode.IsSpace(r) {
+			return true
+		}
+		switch r {
+		case ':', '·', '•', '>', '_', '!', '*', '✳', '✻', '✶', '✽', '✢',
+			'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏':
+			return true
+		default:
+			return false
+		}
+	}))
 }
 
 func (m *Model) syncReplacePrompt() {
