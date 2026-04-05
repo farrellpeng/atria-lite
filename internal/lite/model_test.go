@@ -100,7 +100,7 @@ func TestMonitorViewUsesAtriaStyleChromeAndSecondarySlots(t *testing.T) {
 	got := updated.(Model)
 
 	view := got.View()
-	for _, want := range []string{"agents", "atria", "slot1", "enter:load", "n:normal panes", "r:refresh"} {
+	for _, want := range []string{"agents", "atria", "slot1", "enter:load", "n:normal panes", "r:refresh", "│"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() = %q, want to contain %q", view, want)
 		}
@@ -350,7 +350,7 @@ func TestMonitorShowsReplacePromptWhenThreeSlotsFull(t *testing.T) {
 	if !strings.Contains(view, "Replace") {
 		t.Fatalf("View() = %q, want replace prompt", got.View())
 	}
-	for _, want := range []string{"atria", "esc:back", "r:refresh"} {
+	for _, want := range []string{"atria", "esc:back", "r:refresh", "│"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() = %q, want to contain %q", view, want)
 		}
@@ -395,7 +395,7 @@ func TestMonitorShowsNormalPanePickerOnlyForNonAgents(t *testing.T) {
 	if !strings.Contains(view, "shell") {
 		t.Fatalf("View() = %q, want normal pane picker entry", view)
 	}
-	for _, want := range []string{"agents", "atria", "enter:load", "esc:back", "r:refresh"} {
+	for _, want := range []string{"agents", "atria", "enter:load", "esc:back", "r:refresh", "│"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() = %q, want to contain %q", view, want)
 		}

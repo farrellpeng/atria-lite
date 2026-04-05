@@ -13,14 +13,14 @@ func (m Model) View() string {
 
 	switch m.mode {
 	case ModeReplacePrompt:
-		sections = append(sections, strings.Join(m.viewReplacePrompt(), "\n"))
+		sections = append(sections, m.renderPanel(m.viewReplacePrompt()))
 	case ModeNormalPanePicker:
-		sections = append(sections, strings.Join(m.viewNormalPanePicker(), "\n"))
+		sections = append(sections, m.renderPanel(m.viewNormalPanePicker()))
 	default:
-		sections = append(sections, strings.Join(m.viewAgentList(), "\n"))
+		sections = append(sections, m.renderPanel(m.viewAgentList()))
 	}
 
-	sections = append(sections, strings.Join(m.viewSlotSummary(), "\n"))
+	sections = append(sections, m.renderPanel(m.viewSlotSummary()))
 	sections = append(sections, m.viewFooter())
 
 	return strings.Join(sections, "\n\n")
@@ -50,13 +50,13 @@ func (m Model) viewAgentList() []string {
 
 func (m Model) viewReplacePrompt() []string {
 	lines := []string{
-		"  Replace",
-		fmt.Sprintf("  All 3 slots are full. %s would require a replacement.", paneLabel(m.replacePane)),
+		tui.RenderDim("replace"),
+		padLiteLine(fmt.Sprintf("All 3 slots are full. %s would require a replacement.", paneLabel(m.replacePane)), m.contentWidth()),
 	}
 	for _, slot := range allowedReplaceSlots(m.bindings, m.replacePane) {
-		lines = append(lines, fmt.Sprintf("  Press %s to replace %s.", strings.TrimPrefix(string(slot), "slot"), slot))
+		lines = append(lines, padLiteLine(fmt.Sprintf("Press %s to replace %s.", strings.TrimPrefix(string(slot), "slot"), slot), m.contentWidth()))
 	}
-	lines = append(lines, "  Press esc to go back.")
+	lines = append(lines, padLiteLine("Press esc to go back.", m.contentWidth()))
 	return lines
 }
 
@@ -79,13 +79,13 @@ func (m Model) viewNormalPanePicker() []string {
 }
 
 func (m Model) viewSlotSummary() []string {
-	lines := []string{tui.RenderDim("  slots")}
+	lines := []string{tui.RenderDim("slots")}
 	for _, slot := range slotOrder {
 		if binding, ok := m.bindingForSlot(slot); ok {
-			lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s pane %-4d %s", slot, binding.PaneID, binding.Kind)))
+			lines = append(lines, tui.RenderDim(padLiteLine(fmt.Sprintf("%-5s pane %-4d %s", slot, binding.PaneID, binding.Kind), m.contentWidth())))
 			continue
 		}
-		lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s empty", slot)))
+		lines = append(lines, tui.RenderDim(padLiteLine(fmt.Sprintf("%-5s empty", slot), m.contentWidth())))
 	}
 	return lines
 }
@@ -132,13 +132,13 @@ func (m Model) renderWidth() int {
 func (m Model) renderColumnHeaders() string {
 	paneWidth, typeWidth, bindingWidth, cwdWidth := m.columnWidths()
 	line := fmt.Sprintf(
-		"  %-*s%-*s%-*s%s",
+		"%-*s%-*s%-*s%s",
 		paneWidth, "pane",
 		typeWidth, "type",
 		bindingWidth, "binding",
 		"cwd",
 	)
-	maxWidth := 2 + paneWidth + typeWidth + bindingWidth + cwdWidth
+	maxWidth := paneWidth + typeWidth + bindingWidth + cwdWidth
 	return tui.RenderDim(tui.TruncateToWidth(line, maxWidth))
 }
 
@@ -152,25 +152,33 @@ func (m Model) renderPaneRow(name, kind, binding, cwd string) string {
 	}
 
 	line := fmt.Sprintf(
-		"  %-*s%-*s%-*s%s",
+		"%-*s%-*s%-*s%s",
 		paneWidth, name,
 		typeWidth, kind,
 		bindingWidth, binding,
 		cwd,
 	)
-	return padLiteLine(line, m.renderWidth())
+	return padLiteLine(line, m.contentWidth())
 }
 
 func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, cwdWidth int) {
-	width := m.renderWidth()
-	paneWidth = 22
+	width := m.contentWidth()
+	paneWidth = 20
 	typeWidth = 10
 	bindingWidth = 11
-	cwdWidth = width - 2 - paneWidth - typeWidth - bindingWidth
+	cwdWidth = width - paneWidth - typeWidth - bindingWidth
 	if cwdWidth < 12 {
 		cwdWidth = 12
 	}
 	return paneWidth, typeWidth, bindingWidth, cwdWidth
+}
+
+func (m Model) contentWidth() int {
+	width := m.renderWidth() - 4
+	if width < 24 {
+		return 24
+	}
+	return width
 }
 
 func paneTypeLabel(pane CandidatePane) string {
@@ -185,4 +193,13 @@ func padLiteLine(line string, width int) string {
 		return line + strings.Repeat(" ", pad)
 	}
 	return line
+}
+
+func (m Model) renderPanel(lines []string) string {
+	return lipgloss.NewStyle().
+		Width(m.contentWidth()).
+		Padding(0, 1).
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.AdaptiveColor{Light: "#aaaaaa", Dark: "#888888"}).
+		Render(strings.Join(lines, "\n"))
 }
