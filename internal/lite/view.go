@@ -32,10 +32,7 @@ func (m Model) viewMonitorSplit() string {
 		return left
 	}
 
-	rightWidth := 28
-	if m.renderWidth() >= 140 {
-		rightWidth = 32
-	}
+	rightWidth := m.slotPanelWidth()
 	leftWidth := m.renderWidth() - rightWidth - 3
 	if leftWidth < 60 {
 		return left + "\n\n" + right
@@ -102,16 +99,24 @@ func (m Model) viewNormalPanePicker() []string {
 }
 
 func (m Model) viewSlotSummary() []string {
+	width := m.slotPanelWidth()
+	slotWidth, paneWidth := slotSummaryColumnWidths()
 	lines := []string{tui.RenderDim("slots")}
 	for _, slot := range slotOrder {
 		if slot == Slot3 {
 			continue
 		}
 		if binding, ok := m.bindingForSlot(slot); ok {
-			lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s pane %-4d %s", slot, binding.PaneID, binding.Kind)))
+			kind := string(binding.Kind)
+			if lipgloss.Width(kind) > width-2-slotWidth-paneWidth {
+				kind = tui.TruncateToWidth(kind, width-2-slotWidth-paneWidth)
+			}
+			text := fmt.Sprintf("  %-*s%-*d%s", slotWidth, slot, paneWidth, binding.PaneID, kind)
+			lines = append(lines, tui.RenderDim(padSlotSummaryLine(text, width)))
 			continue
 		}
-		lines = append(lines, tui.RenderDim(fmt.Sprintf("  %-5s empty", slot)))
+		text := fmt.Sprintf("  %-*s%-*s%s", slotWidth, slot, paneWidth, "-", "empty")
+		lines = append(lines, tui.RenderDim(padSlotSummaryLine(text, width)))
 	}
 	return lines
 }
@@ -184,30 +189,76 @@ func (m Model) renderWidth() int {
 	return 80
 }
 
+func (m Model) listWidth() int {
+	width := m.renderWidth()
+	if width < 110 {
+		return width
+	}
+	rightWidth := m.slotPanelWidth()
+	leftWidth := width - rightWidth - 3
+	if leftWidth < 60 {
+		return width
+	}
+	return leftWidth
+}
+
+func (m Model) slotPanelWidth() int {
+	width := m.renderWidth() / 4
+	if width < 24 {
+		return 24
+	}
+	return width
+}
+
+func slotSummaryColumnWidths() (slotWidth, paneWidth int) {
+	return 7, 6
+}
+
+func padSlotSummaryLine(text string, width int) string {
+	if lipgloss.Width(text) >= width {
+		return tui.TruncateToWidth(text, width)
+	}
+	return text + strings.Repeat(" ", width-lipgloss.Width(text))
+}
+
 func (m Model) renderColumnHeaders() string {
-	paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth := m.columnWidths()
-	line := fmt.Sprintf(
-		"  %-*s%-*s%-*s%-*s%s",
-		paneWidth, "pane",
-		typeWidth, "type",
-		bindingWidth, "binding",
-		statusWidth, "status",
-		"cwd",
-	)
+	paneWidth, typeWidth, bindingWidth, statusWidth, usageWidth, cwdWidth := m.columnWidths()
+	var line string
 	maxWidth := 2 + paneWidth + typeWidth + bindingWidth + statusWidth + cwdWidth
+	if usageWidth > 0 {
+		line = fmt.Sprintf(
+			"  %-*s%-*s%-*s%-*s%-*s%s",
+			paneWidth, "pane",
+			typeWidth, "type",
+			bindingWidth, "binding",
+			statusWidth, "status",
+			usageWidth, "usage",
+			"cwd",
+		)
+		maxWidth += usageWidth
+	} else {
+		line = fmt.Sprintf(
+			"  %-*s%-*s%-*s%-*s%s",
+			paneWidth, "pane",
+			typeWidth, "type",
+			bindingWidth, "binding",
+			statusWidth, "status",
+			"cwd",
+		)
+	}
 	return tui.RenderDim(tui.TruncateToWidth(line, maxWidth))
 }
 
 func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) string {
-	paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth := m.columnWidths()
+	paneWidth, typeWidth, bindingWidth, statusWidth, usageWidth, cwdWidth := m.columnWidths()
 	name := paneLabel(pane)
 	kind := paneTypeLabel(pane)
 	statusText, statusStyle := tui.FormatAgentStatus(pane.Status, pane.Activity, pane.Attention, m.spinnerFrame)
 	cwd := pane.CWD
 
-	name = tui.TruncateToWidth(name, paneWidth-1)
-	kind = tui.TruncateToWidth(kind, typeWidth-1)
-	binding = tui.TruncateToWidth(binding, bindingWidth-1)
+	name = tui.TruncateToWidth(name, paneWidth)
+	kind = tui.TruncateToWidth(kind, typeWidth)
+	binding = tui.TruncateToWidth(binding, bindingWidth)
 	if cwdWidth > 0 {
 		cwd = tui.TruncateToWidth(cwd, cwdWidth)
 	}
@@ -215,16 +266,16 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 	nameCell := fmt.Sprintf("  %-*s", paneWidth, name)
 	typeCell := fmt.Sprintf("%-*s", typeWidth, kind)
 	bindingCell := fmt.Sprintf("%-*s", bindingWidth, binding)
-	cwdCell := cwd
+	cwdCell := fmt.Sprintf("%-*s", cwdWidth, cwd)
 
-	// Build quota suffix for Codex panes (only for idle/working; needs_input and error omit quota)
-	var quotaSuffix string
-	var quotaStyle lipgloss.Style
+	// Build usage text for Codex panes (only for idle/working; needs_input and error omit usage)
+	var usageText string
+	var usageStyle lipgloss.Style
 	if pane.Kind == OccupantAgent && pane.AgentType == "codex" &&
 		pane.Status != model.StatusNeedsInput && pane.Status != model.StatusError {
-		suffix, style := formatQuotaSuffix(m.codexQuota, statusWidth-4)
-		quotaSuffix = suffix
-		quotaStyle = style
+		text, style := formatUsageText(m.codexQuota, usageWidth)
+		usageText = text
+		usageStyle = style
 	}
 
 	if selected {
@@ -232,11 +283,13 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 		if pane.Kind == OccupantAgent && pane.AgentType != "" {
 			typeStyled = tui.RenderSelectedAgentTypeCell(pane.AgentType, typeCell)
 		}
-		statusCell := renderStatusCell(statusText, statusStyle, quotaSuffix, quotaStyle, true, statusWidth)
+		statusCell := renderStatusCell(statusText, statusStyle, true, statusWidth)
+		usageCell := renderUsageCell(usageText, usageStyle, true, usageWidth)
 		return tui.RenderSelectedText(nameCell) +
 			typeStyled +
 			tui.RenderSelectedText(bindingCell) +
 			statusCell +
+			usageCell +
 			tui.RenderSelectedText(cwdCell)
 	}
 
@@ -246,26 +299,44 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 	} else {
 		typeStyled = tui.RenderDim(typeCell)
 	}
-	statusCell := renderStatusCell(statusText, statusStyle, quotaSuffix, quotaStyle, false, statusWidth)
+	statusCell := renderStatusCell(statusText, statusStyle, false, statusWidth)
+	usageCell := renderUsageCell(usageText, usageStyle, false, usageWidth)
 
 	if cwdCell != "" {
 		cwdCell = tui.RenderDim(cwdCell)
 	}
-	return nameCell + typeStyled + bindingCell + statusCell + cwdCell
+	return nameCell + typeStyled + bindingCell + statusCell + usageCell + cwdCell
 }
 
-func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth int) {
-	width := m.renderWidth()
+func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, statusWidth, usageWidth, cwdWidth int) {
+	width := m.listWidth()
+	totalWidth := m.renderWidth()
 	paneWidth = 18
 	typeWidth = 10
 	bindingWidth = 10
-	statusWidth = 24
-	if width >= 110 {
-		paneWidth = 24
-		statusWidth = 28
+	statusWidth = 14
+	if m.hasCodexPanes() {
+		usageWidth = 18
 	}
-	cwdWidth = width - 2 - paneWidth - typeWidth - bindingWidth - statusWidth
-	for cwdWidth < 12 && statusWidth > 18 {
+	if totalWidth >= 110 {
+		paneWidth = 24
+		statusWidth = 16
+		if usageWidth > 0 {
+			usageWidth = 22
+		}
+	}
+	if totalWidth >= 140 && usageWidth > 0 {
+		usageWidth = 34
+	}
+	for cwdWidth = width - 2 - paneWidth - typeWidth - bindingWidth - statusWidth - usageWidth; cwdWidth < 12 && usageWidth > 12; {
+		usageWidth--
+		cwdWidth++
+	}
+	for cwdWidth < 12 && usageWidth > 8 {
+		usageWidth--
+		cwdWidth++
+	}
+	for cwdWidth < 12 && statusWidth > 12 {
 		statusWidth--
 		cwdWidth++
 	}
@@ -276,18 +347,7 @@ func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, statusWidth, 
 	if cwdWidth < 12 {
 		cwdWidth = 12
 	}
-	// Expansion pass: give status more room when quota is available
-	if m.hasCodexQuota() && m.codexQuota != nil {
-		targetStatus := 32
-		if width >= 110 {
-			targetStatus = 36
-		}
-		for statusWidth < targetStatus && cwdWidth > 12 {
-			statusWidth++
-			cwdWidth--
-		}
-	}
-	return paneWidth, typeWidth, bindingWidth, statusWidth, cwdWidth
+	return paneWidth, typeWidth, bindingWidth, statusWidth, usageWidth, cwdWidth
 }
 
 func paneTypeLabel(pane CandidatePane) string {
@@ -308,52 +368,58 @@ func paneTypeLabel(pane CandidatePane) string {
 	return "Normal"
 }
 
-func formatQuotaSuffix(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style) {
-	if qi == nil || maxChars < 8 {
+func formatUsageText(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style) {
+	if qi == nil || maxChars < 3 {
 		return "", lipgloss.NewStyle()
 	}
 
-	primary := fmt.Sprintf(" \u00b7 %.0f%% (%s)", qi.PrimaryPct, qi.PrimaryReset)
+	primary := formatUsageWindow("5h", qi.PrimaryPct, qi.PrimaryReset)
 	primaryStyle := tui.QuotaPercentageStyle(qi.PrimaryPct)
 
 	if lipgloss.Width(primary) > maxChars {
-		shorter := fmt.Sprintf(" \u00b7 %.0f%%", qi.PrimaryPct)
+		shorter := fmt.Sprintf("5h %.0f%%", qi.PrimaryPct)
 		if lipgloss.Width(shorter) <= maxChars {
 			return shorter, primaryStyle
+		}
+		shortest := fmt.Sprintf("%.0f%%", qi.PrimaryPct)
+		if lipgloss.Width(shortest) <= maxChars {
+			return shortest, primaryStyle
 		}
 		return "", lipgloss.NewStyle()
 	}
 
-	if qi.SecondaryPct > 0 && qi.SecondaryReset != "" {
-		secondary := fmt.Sprintf(" \u00b7 %.0f%% (%s)", qi.SecondaryPct, qi.SecondaryReset)
-		combined := primary + secondary
-		if lipgloss.Width(combined) <= maxChars {
-			return combined, primaryStyle
-		}
+	secondary := formatUsageWindow("7d", qi.SecondaryPct, qi.SecondaryReset)
+	combined := primary + " / " + secondary
+	if lipgloss.Width(combined) <= maxChars {
+		return combined, primaryStyle
 	}
 
 	return primary, primaryStyle
 }
 
-func renderStatusCell(statusText string, statusStyle lipgloss.Style,
-	quotaSuffix string, quotaStyle lipgloss.Style,
-	selected bool, cellWidth int) string {
-
-	quotaWidth := lipgloss.Width(quotaSuffix)
-	statusWidth := cellWidth - quotaWidth
-	if statusWidth < 0 {
-		// quotaSuffix alone exceeds cellWidth; truncate the suffix
-		quotaSuffix = tui.TruncateToWidth(quotaSuffix, cellWidth)
-		quotaWidth = lipgloss.Width(quotaSuffix)
-		statusWidth = 0
-		statusText = ""
-	} else if lipgloss.Width(statusText) > statusWidth {
-		statusText = tui.TruncateToWidth(statusText, statusWidth)
+func formatUsageWindow(label string, pct float64, reset string) string {
+	if reset == "" {
+		return fmt.Sprintf("%s %.0f%%", label, pct)
 	}
+	return fmt.Sprintf("%s %.0f%% (%s)", label, pct, reset)
+}
 
+func renderStatusCell(statusText string, statusStyle lipgloss.Style, selected bool, cellWidth int) string {
+	if lipgloss.Width(statusText) > cellWidth {
+		statusText = tui.TruncateToWidth(statusText, cellWidth)
+	}
 	if !selected {
-		return statusStyle.Width(statusWidth).Render(statusText) + quotaStyle.Render(quotaSuffix)
+		return statusStyle.Width(cellWidth).Render(statusText)
 	}
-	return tui.WithSelectedBg(statusStyle).Bold(true).Width(statusWidth).Render(statusText) +
-		tui.WithSelectedBg(quotaStyle).Bold(true).Render(quotaSuffix)
+	return tui.WithSelectedBg(statusStyle).Bold(true).Width(cellWidth).Render(statusText)
+}
+
+func renderUsageCell(usageText string, usageStyle lipgloss.Style, selected bool, cellWidth int) string {
+	if lipgloss.Width(usageText) > cellWidth {
+		usageText = tui.TruncateToWidth(usageText, cellWidth)
+	}
+	if !selected {
+		return usageStyle.Width(cellWidth).Render(usageText)
+	}
+	return tui.WithSelectedBg(usageStyle).Bold(true).Width(cellWidth).Render(usageText)
 }

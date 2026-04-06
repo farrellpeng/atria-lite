@@ -1445,10 +1445,9 @@ func TestSelectedAgentRowKeepsStatusColor(t *testing.T) {
 	}
 
 	row := m.renderPaneRow(pane, "slot1", true)
-	_, _, _, statusWidth, _ := m.columnWidths()
+	_, _, _, statusWidth, _, _ := m.columnWidths()
 	statusText, statusStyle := tui.FormatAgentStatus(pane.Status, pane.Activity, pane.Attention, m.spinnerFrame)
-	statusCell := fmt.Sprintf("%-*s", statusWidth, tui.TruncateToWidth(statusText, statusWidth-1))
-	want := tui.RenderSelectedStatusCell(statusStyle, statusCell)
+	want := renderStatusCell(statusText, statusStyle, true, statusWidth)
 
 	if !strings.Contains(row, want) {
 		t.Fatalf("row = %q, want selected status cell %q", row, want)

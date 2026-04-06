@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,41 +73,13 @@ func (c *Client) Fetch() *QuotaInfo {
 		stdin.Close()
 		cmd.Wait()
 	}()
-
-	// Run scanner reading in a goroutine so we can select on ctx
-	respCh := make(chan []byte, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 || line[0] != '{' {
-				continue
-			}
-			// Check if this line has id=1 or id=2
-			if hasID(line, 1) || hasID(line, 2) {
-				select {
-				case respCh <- line:
-				default:
-				}
-				return
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			errCh <- err
-		}
-	}()
+	scanner := bufio.NewScanner(stdout)
 
 	// Send initialize
 	fmt.Fprintf(stdin, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"atria-lite\",\"version\":\"1.0.0\"}}}\n")
 
 	// Wait for initialize response (id=1)
-	select {
-	case <-respCh:
-		// ok
-	case <-errCh:
-		return c.cachedOrNil()
-	case <-ctx.Done():
+	if _, err := readJSONRPCResponseByID(ctx, scanner, 1); err != nil {
 		return c.cachedOrNil()
 	}
 
@@ -114,21 +87,18 @@ func (c *Client) Fetch() *QuotaInfo {
 	fmt.Fprintf(stdin, "{\"id\":2,\"method\":\"account/rateLimits/read\"}\n")
 
 	// Wait for rateLimits response (id=2)
-	select {
-	case raw := <-respCh:
-		qi, err := parseRateLimitsResponse(raw)
-		if err != nil || qi == nil {
-			return c.cachedOrNil()
-		}
-		c.mu.Lock()
-		c.cache = qi
-		c.mu.Unlock()
-		return qi
-	case <-errCh:
-		return c.cachedOrNil()
-	case <-ctx.Done():
+	raw, err := readJSONRPCResponseByID(ctx, scanner, 2)
+	if err != nil {
 		return c.cachedOrNil()
 	}
+	qi, err := parseRateLimitsResponse(raw)
+	if err != nil || qi == nil {
+		return c.cachedOrNil()
+	}
+	c.mu.Lock()
+	c.cache = qi
+	c.mu.Unlock()
+	return qi
 }
 
 // hasID returns true if the JSON line contains the given id.
@@ -136,6 +106,30 @@ func (c *Client) Fetch() *QuotaInfo {
 func hasID(line []byte, id int) bool {
 	target := fmt.Sprintf("\"id\":%d", id)
 	return bytes.Contains(line, []byte(target))
+}
+
+func readJSONRPCResponseByID(ctx context.Context, scanner *bufio.Scanner, id int) ([]byte, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return nil, err
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, io.EOF
+		}
+		line := scanner.Bytes()
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		if hasID(line, id) {
+			return append([]byte(nil), line...), nil
+		}
+	}
 }
 
 func (c *Client) cachedOrNil() *QuotaInfo {
@@ -215,9 +209,9 @@ func parseRateLimitsResponse(data []byte) (*QuotaInfo, error) {
 		return nil, err
 	}
 	qi := &QuotaInfo{
-		PrimaryPct:  resp.Result.RateLimits.Primary.UsedPercent,
+		PrimaryPct:   resp.Result.RateLimits.Primary.UsedPercent,
 		PrimaryReset: timeUntilReset(resp.Result.RateLimits.Primary.ResetsAt),
-		FetchedAt:   time.Now(),
+		FetchedAt:    time.Now(),
 	}
 	if sec := resp.Result.RateLimits.Secondary; sec.UsedPercent > 0 {
 		qi.SecondaryPct = sec.UsedPercent

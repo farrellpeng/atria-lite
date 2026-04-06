@@ -1,7 +1,12 @@
 package codex
 
 import (
+	"bufio"
+	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -143,6 +148,62 @@ func TestClientFetch_Integration(t *testing.T) {
 	result := c.Fetch()
 	// result may be nil if app-server fails or returns error
 	t.Logf("Fetch() = %+v", result)
+}
+
+func TestReadJSONRPCResponseByID_SequentialResponses(t *testing.T) {
+	t.Parallel()
+
+	scanner := bufio.NewScanner(strings.NewReader(strings.Join([]string{
+		"codex app-server starting",
+		`{"id":1,"result":{"ok":true},"jsonrpc":"2.0"}`,
+		`{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":42.5,"resetsAt":"2026-04-05T12:00:00Z","windowDurationMins":300}}},"jsonrpc":"2.0"}`,
+	}, "\n")))
+
+	ctx := context.Background()
+
+	initResp, err := readJSONRPCResponseByID(ctx, scanner, 1)
+	if err != nil {
+		t.Fatalf("read init response: %v", err)
+	}
+	if !strings.Contains(string(initResp), `"id":1`) {
+		t.Fatalf("init response = %s, want id=1", initResp)
+	}
+
+	rateResp, err := readJSONRPCResponseByID(ctx, scanner, 2)
+	if err != nil {
+		t.Fatalf("read rate limit response: %v", err)
+	}
+	if !strings.Contains(string(rateResp), `"id":2`) {
+		t.Fatalf("rate limit response = %s, want id=2", rateResp)
+	}
+}
+
+func TestClientFetch_SequentialJSONRPCResponses(t *testing.T) {
+	t.Parallel()
+
+	scriptPath := filepath.Join(t.TempDir(), "codex")
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"read _",
+		"printf '%s\\n' '{\"id\":1,\"result\":{\"ok\":true},\"jsonrpc\":\"2.0\"}'",
+		"read _",
+		"printf '%s\\n' '{\"id\":2,\"result\":{\"rateLimits\":{\"primary\":{\"usedPercent\":42.5,\"resetsAt\":\"2099-04-05T12:00:00Z\",\"windowDurationMins\":300},\"secondary\":{\"usedPercent\":18.0,\"resetsAt\":\"2099-04-10T00:00:00Z\",\"windowDurationMins\":10080}}},\"jsonrpc\":\"2.0\"}'",
+	}, "\n")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+
+	c := &Client{codexBin: scriptPath, cacheTTL: 60 * time.Second}
+	qi := c.Fetch()
+	if qi == nil {
+		t.Fatal("Fetch() = nil, want quota info")
+	}
+	if qi.PrimaryPct != 42.5 {
+		t.Fatalf("PrimaryPct = %v, want 42.5", qi.PrimaryPct)
+	}
+	if qi.SecondaryPct != 18.0 {
+		t.Fatalf("SecondaryPct = %v, want 18.0", qi.SecondaryPct)
+	}
 }
 
 func TestCached(t *testing.T) {
