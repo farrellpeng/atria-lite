@@ -198,9 +198,52 @@ type rateLimitsResponse struct {
 }
 
 type rateLimitWindow struct {
-	UsedPercent        float64 `json:"usedPercent"`
-	ResetsAt           string  `json:"resetsAt"`
-	WindowDurationMins int     `json:"windowDurationMins"`
+	UsedPercent        float64      `json:"usedPercent"`
+	ResetsAt           resetAtValue `json:"resetsAt"`
+	WindowDurationMins int          `json:"windowDurationMins"`
+}
+
+type resetAtValue struct {
+	time  time.Time
+	valid bool
+}
+
+func (r *resetAtValue) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		*r = resetAtValue{}
+		return nil
+	}
+
+	var unix int64
+	if err := json.Unmarshal(data, &unix); err == nil {
+		r.time = time.Unix(unix, 0)
+		r.valid = true
+		return nil
+	}
+
+	var iso string
+	if err := json.Unmarshal(data, &iso); err == nil {
+		if iso == "" {
+			*r = resetAtValue{}
+			return nil
+		}
+		t, err := time.Parse(time.RFC3339, iso)
+		if err != nil {
+			return err
+		}
+		r.time = t
+		r.valid = true
+		return nil
+	}
+
+	return fmt.Errorf("unsupported resetsAt value: %s", string(data))
+}
+
+func (r resetAtValue) untilReset() string {
+	if !r.valid {
+		return ""
+	}
+	return formatResetTimeAt(r.time, time.Now())
 }
 
 func parseRateLimitsResponse(data []byte) (*QuotaInfo, error) {
@@ -210,41 +253,32 @@ func parseRateLimitsResponse(data []byte) (*QuotaInfo, error) {
 	}
 	qi := &QuotaInfo{
 		PrimaryPct:   resp.Result.RateLimits.Primary.UsedPercent,
-		PrimaryReset: timeUntilReset(resp.Result.RateLimits.Primary.ResetsAt),
+		PrimaryReset: resp.Result.RateLimits.Primary.ResetsAt.untilReset(),
 		FetchedAt:    time.Now(),
 	}
 	if sec := resp.Result.RateLimits.Secondary; sec.UsedPercent > 0 {
 		qi.SecondaryPct = sec.UsedPercent
-		qi.SecondaryReset = timeUntilReset(sec.ResetsAt)
+		qi.SecondaryReset = sec.ResetsAt.untilReset()
 	}
 	return qi, nil
 }
 
-// timeUntilReset converts ISO8601 reset timestamp to "2h10m" format.
-func timeUntilReset(iso string) string {
-	if iso == "" {
+func formatResetTimeAt(reset, now time.Time) string {
+	if reset.IsZero() {
 		return ""
 	}
-	t, err := time.Parse(time.RFC3339, iso)
-	if err != nil {
-		return ""
+
+	loc := now.Location()
+	reset = reset.In(loc)
+	now = now.In(loc)
+
+	timeText := reset.Format("15:04")
+	ry, rm, rd := reset.Date()
+	ny, nm, nd := now.Date()
+	if ry == ny && rm == nm && rd == nd {
+		return timeText
 	}
-	d := time.Until(t)
-	if d <= 0 {
-		return "now"
-	}
-	if d < time.Minute {
-		return "<1m"
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-	if d < 24*time.Hour {
-		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-	}
-	days := int(d.Hours() / 24)
-	remainingHours := int(d.Hours()) % 24
-	return fmt.Sprintf("%dd%dh", days, remainingHours)
+	return fmt.Sprintf("%s on %s", timeText, reset.Format("2 Jan"))
 }
 
 // --- binary discovery ---

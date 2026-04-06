@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,35 @@ func TestParseRateLimitsResponse_MissingSecondary(t *testing.T) {
 	}
 }
 
+func TestParseRateLimitsResponse_UnixResetsAt(t *testing.T) {
+	now := time.Now()
+	primaryReset := now.Add(2*time.Hour + 10*time.Minute).Unix()
+	secondaryReset := now.Add(4*24*time.Hour + 12*time.Hour).Unix()
+
+	raw := `{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":3,"resetsAt":` +
+		strconv.FormatInt(primaryReset, 10) +
+		`,"windowDurationMins":300},"secondary":{"usedPercent":77,"resetsAt":` +
+		strconv.FormatInt(secondaryReset, 10) +
+		`,"windowDurationMins":10080}}},"jsonrpc":"2.0"}`
+
+	qi, err := parseRateLimitsResponse([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if qi.PrimaryPct != 3 {
+		t.Errorf("PrimaryPct = %v, want 3", qi.PrimaryPct)
+	}
+	if qi.SecondaryPct != 77 {
+		t.Errorf("SecondaryPct = %v, want 77", qi.SecondaryPct)
+	}
+	if qi.PrimaryReset == "" {
+		t.Error("PrimaryReset is empty")
+	}
+	if qi.SecondaryReset == "" {
+		t.Error("SecondaryReset is empty")
+	}
+}
+
 func TestParseRateLimitsResponse_InvalidJSON(t *testing.T) {
 	_, err := parseRateLimitsResponse([]byte("not json"))
 	if err == nil {
@@ -49,43 +79,43 @@ func TestParseRateLimitsResponse_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestTimeUntilReset(t *testing.T) {
-	now := time.Now()
+func TestFormatResetTimeAt(t *testing.T) {
+	loc := time.FixedZone("UTC+8", 8*60*60)
+	now := time.Date(2026, time.April, 6, 19, 30, 0, 0, loc)
 
 	tests := []struct {
-		name   string
-		offset time.Duration
-		want   string
+		name  string
+		reset time.Time
+		want  string
 	}{
-		{"expired", -1 * time.Second, "now"},
-		{"sub-minute", 30 * time.Second, "<1m"},
-		{"exactly 1 minute", 1*time.Minute + 5*time.Second, "1m"},
-		{"10 minutes", 10*time.Minute + 5*time.Second, "10m"},
-		{"sub-hour", 45*time.Minute + 30*time.Second, "45m"},
-		{"1 hour", 1*time.Hour + 5*time.Second, "1h0m"},
-		{"1 hour 30 minutes", 1*time.Hour + 30*time.Minute + time.Second, "1h30m"},
-		{"sub-day", 23*time.Hour + 59*time.Minute + time.Second, "23h59m"},
-		{"exactly 24 hours", 24*time.Hour + 5*time.Second, "1d0h"},
-		{"1 day 6 hours", 30*time.Hour + 5*time.Second, "1d6h"},
-		{"2 days", 48*time.Hour + 5*time.Second, "2d0h"},
-		{"2 days 12 hours", 60*time.Hour + 5*time.Second, "2d12h"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			target := now.Add(tc.offset)
-			got := timeUntilReset(target.Format(time.RFC3339))
-			if got != tc.want {
-				t.Errorf("timeUntilReset(%s) = %q, want %q", tc.offset, got, tc.want)
-			}
-		})
+		{
+			name:  "same day shows time only",
+			reset: time.Date(2026, time.April, 6, 21, 47, 0, 0, loc),
+			want:  "21:47",
+		},
+		{
+			name:  "future day shows date suffix",
+			reset: time.Date(2026, time.April, 8, 15, 48, 0, 0, loc),
+			want:  "15:48 on 8 Apr",
+		},
+		{
+			name:  "utc timestamp converted to local time",
+			reset: time.Date(2026, time.April, 8, 7, 48, 0, 0, time.UTC),
+			want:  "15:48 on 8 Apr",
+		},
+		{
+			name:  "zero time omitted",
+			reset: time.Time{},
+			want:  "",
+		},
 	}
 
-	// empty/invalid input
-	if got := timeUntilReset(""); got != "" {
-		t.Errorf("timeUntilReset(\"\") = %q, want \"\"", got)
-	}
-	if got := timeUntilReset("not-iso"); got != "" {
-		t.Errorf("timeUntilReset(\"not-iso\") = %q, want \"\"", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatResetTimeAt(tc.reset, now); got != tc.want {
+				t.Fatalf("formatResetTimeAt(%v, %v) = %q, want %q", tc.reset, now, got, tc.want)
+			}
+		})
 	}
 }
 

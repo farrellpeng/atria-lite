@@ -2,6 +2,7 @@ package lite
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -203,9 +204,9 @@ func (m Model) listWidth() int {
 }
 
 func (m Model) slotPanelWidth() int {
-	width := m.renderWidth() / 4
-	if width < 24 {
-		return 24
+	width := m.renderWidth() / 8
+	if width < 18 {
+		return 18
 	}
 	return width
 }
@@ -311,22 +312,23 @@ func (m Model) renderPaneRow(pane CandidatePane, binding string, selected bool) 
 func (m Model) columnWidths() (paneWidth, typeWidth, bindingWidth, statusWidth, usageWidth, cwdWidth int) {
 	width := m.listWidth()
 	totalWidth := m.renderWidth()
-	paneWidth = 18
-	typeWidth = 10
-	bindingWidth = 10
-	statusWidth = 14
+	paneWidth = 16
+	typeWidth = 8
+	bindingWidth = 8
+	statusWidth = 16
 	if m.hasCodexPanes() {
-		usageWidth = 18
+		usageWidth = 22
 	}
 	if totalWidth >= 110 {
-		paneWidth = 24
-		statusWidth = 16
+		paneWidth = 20
+		statusWidth = 20
 		if usageWidth > 0 {
-			usageWidth = 22
+			usageWidth = 32
 		}
 	}
 	if totalWidth >= 140 && usageWidth > 0 {
-		usageWidth = 34
+		statusWidth = 24
+		usageWidth = 72
 	}
 	for cwdWidth = width - 2 - paneWidth - typeWidth - bindingWidth - statusWidth - usageWidth; cwdWidth < 12 && usageWidth > 12; {
 		usageWidth--
@@ -373,25 +375,28 @@ func formatUsageText(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style)
 		return "", lipgloss.NewStyle()
 	}
 
-	primary := formatUsageWindow("5h", qi.PrimaryPct, qi.PrimaryReset)
-	primaryStyle := tui.QuotaPercentageStyle(qi.PrimaryPct)
+	primaryRemaining := quotaRemainingPct(qi.PrimaryPct)
+	primary := formatUsageWindow("5h", primaryRemaining, qi.PrimaryReset)
+	primaryStyle := tui.QuotaRemainingStyle(primaryRemaining)
 
 	if lipgloss.Width(primary) > maxChars {
-		shorter := fmt.Sprintf("5h %.0f%%", qi.PrimaryPct)
+		shorter := fmt.Sprintf("5h %.0f%% left", primaryRemaining)
 		if lipgloss.Width(shorter) <= maxChars {
 			return shorter, primaryStyle
 		}
-		shortest := fmt.Sprintf("%.0f%%", qi.PrimaryPct)
+		shortest := fmt.Sprintf("%.0f%% left", primaryRemaining)
 		if lipgloss.Width(shortest) <= maxChars {
 			return shortest, primaryStyle
 		}
 		return "", lipgloss.NewStyle()
 	}
 
-	secondary := formatUsageWindow("7d", qi.SecondaryPct, qi.SecondaryReset)
-	combined := primary + " / " + secondary
-	if lipgloss.Width(combined) <= maxChars {
-		return combined, primaryStyle
+	if hasSecondaryQuota(qi) {
+		secondary := formatUsageWindow("7d", quotaRemainingPct(qi.SecondaryPct), qi.SecondaryReset)
+		combined := primary + " / " + secondary
+		if lipgloss.Width(combined) <= maxChars {
+			return combined, primaryStyle
+		}
 	}
 
 	return primary, primaryStyle
@@ -399,9 +404,9 @@ func formatUsageText(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style)
 
 func formatUsageWindow(label string, pct float64, reset string) string {
 	if reset == "" {
-		return fmt.Sprintf("%s %.0f%%", label, pct)
+		return fmt.Sprintf("%s %.0f%% left", label, pct)
 	}
-	return fmt.Sprintf("%s %.0f%% (%s)", label, pct, reset)
+	return fmt.Sprintf("%s %.0f%% left (resets %s)", label, pct, reset)
 }
 
 func renderStatusCell(statusText string, statusStyle lipgloss.Style, selected bool, cellWidth int) string {
@@ -422,4 +427,22 @@ func renderUsageCell(usageText string, usageStyle lipgloss.Style, selected bool,
 		return usageStyle.Width(cellWidth).Render(usageText)
 	}
 	return tui.WithSelectedBg(usageStyle).Bold(true).Width(cellWidth).Render(usageText)
+}
+
+func quotaRemainingPct(usedPct float64) float64 {
+	remaining := 100 - usedPct
+	if remaining < 0 {
+		return 0
+	}
+	if remaining > 100 {
+		return 100
+	}
+	return math.Round(remaining)
+}
+
+func hasSecondaryQuota(qi *codex.QuotaInfo) bool {
+	if qi == nil {
+		return false
+	}
+	return qi.SecondaryPct > 0 || qi.SecondaryReset != ""
 }

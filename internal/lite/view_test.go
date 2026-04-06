@@ -19,25 +19,25 @@ func stripANSI(s string) string {
 func TestFormatUsageText(t *testing.T) {
 	qi := &codex.QuotaInfo{
 		PrimaryPct:     42.5,
-		PrimaryReset:   "2h10m",
+		PrimaryReset:   "21:47",
 		SecondaryPct:   18.0,
-		SecondaryReset: "4d12h",
+		SecondaryReset: "15:48 on 8 Apr",
 	}
 
 	text, _ := formatUsageText(qi, 50)
 	if text == "" {
 		t.Error("text is empty")
 	}
-	if !strings.Contains(text, "5h 42% (2h10m)") {
-		t.Fatalf("text = %q, want labeled primary usage text", text)
+	if !strings.Contains(text, "5h 58% left (resets 21:47)") {
+		t.Fatalf("text = %q, want labeled primary remaining usage text", text)
 	}
-	if !strings.Contains(text, "7d 18% (4d12h)") {
-		t.Fatalf("text = %q, want labeled secondary usage text", text)
+	if !strings.Contains(text, "7d 82% left (resets 15:48 on 8 Apr)") {
+		t.Fatalf("text = %q, want labeled secondary remaining usage text", text)
 	}
 }
 
 func TestFormatUsageText_TooNarrowForPrimary(t *testing.T) {
-	qi := &codex.QuotaInfo{PrimaryPct: 42.5, PrimaryReset: "2h10m"}
+	qi := &codex.QuotaInfo{PrimaryPct: 42.5, PrimaryReset: "21:47"}
 	text, _ := formatUsageText(qi, 2)
 	if text != "" {
 		t.Errorf("text = %q, want empty", text)
@@ -47,7 +47,7 @@ func TestFormatUsageText_TooNarrowForPrimary(t *testing.T) {
 func TestFormatUsageText_DropsSecondary(t *testing.T) {
 	qi := &codex.QuotaInfo{
 		PrimaryPct:   42.5,
-		PrimaryReset: "2h10m",
+		PrimaryReset: "21:47",
 		SecondaryPct: 18.0,
 	}
 	text, _ := formatUsageText(qi, 16)
@@ -57,28 +57,40 @@ func TestFormatUsageText_DropsSecondary(t *testing.T) {
 	if strings.Contains(text, " / ") {
 		t.Fatalf("text = %q, want primary usage only when narrow", text)
 	}
-	if !strings.Contains(text, "5h 42%") {
-		t.Fatalf("text = %q, want labeled primary usage", text)
+	if !strings.Contains(text, "5h 58% left") {
+		t.Fatalf("text = %q, want labeled primary remaining usage", text)
 	}
 }
 
 func TestFormatUsageText_OmitsEmptyResetParens(t *testing.T) {
 	qi := &codex.QuotaInfo{PrimaryPct: 0}
 	text, _ := formatUsageText(qi, 12)
-	if text != "5h 0%" {
-		t.Fatalf("text = %q, want 5h 0%%", text)
+	if text != "5h 100% left" {
+		t.Fatalf("text = %q, want 5h 100%% left", text)
 	}
 }
 
 func TestFormatUsageText_ShowsSecondaryEvenWhenZero(t *testing.T) {
 	qi := &codex.QuotaInfo{
-		PrimaryPct:   0,
-		PrimaryReset: "2h10m",
-		SecondaryPct: 0,
+		PrimaryPct:     0,
+		PrimaryReset:   "21:47",
+		SecondaryPct:   0,
+		SecondaryReset: "15:48 on 8 Apr",
 	}
 	text, _ := formatUsageText(qi, 40)
-	if !strings.Contains(text, "5h 0% (2h10m) / 7d 0%") {
-		t.Fatalf("text = %q, want both 5h and 7d windows", text)
+	if !strings.Contains(text, "5h 100% left (resets 21:47) / 7d 100% left") {
+		t.Fatalf("text = %q, want both 5h and 7d remaining windows", text)
+	}
+}
+
+func TestFormatUsageText_MissingSecondaryDoesNotRenderFake100(t *testing.T) {
+	qi := &codex.QuotaInfo{
+		PrimaryPct:   3,
+		PrimaryReset: "21:47",
+	}
+	text, _ := formatUsageText(qi, 40)
+	if strings.Contains(text, "7d") {
+		t.Fatalf("text = %q, want no secondary window when API omitted it", text)
 	}
 }
 
@@ -128,10 +140,38 @@ func TestRenderColumnHeaders_IncludesUsage(t *testing.T) {
 	}
 }
 
-func TestListWidth_UsesQuarterScreenForSlotsPanel(t *testing.T) {
-	m := Model{width: 140}
-	if got, want := m.listWidth(), 102; got != want {
+func TestListWidth_UsesEighthScreenForSlotsPanel(t *testing.T) {
+	m := Model{width: 160}
+	if got, want := m.slotPanelWidth(), 20; got != want {
+		t.Fatalf("slotPanelWidth() = %d, want %d", got, want)
+	}
+	if got, want := m.listWidth(), 137; got != want {
 		t.Fatalf("listWidth() = %d, want %d", got, want)
+	}
+}
+
+func TestColumnWidths_WideScreenPrioritizesUsageAndStatus(t *testing.T) {
+	m := Model{
+		width: 200,
+		panes: []CandidatePane{
+			{PaneID: 15, Kind: OccupantAgent, AgentType: model.AgentCodex},
+		},
+	}
+	paneWidth, typeWidth, _, statusWidth, usageWidth, cwdWidth := m.columnWidths()
+	if got, want := usageWidth, 72; got != want {
+		t.Fatalf("usageWidth = %d, want %d", got, want)
+	}
+	if statusWidth < 24 {
+		t.Fatalf("statusWidth = %d, want at least 24", statusWidth)
+	}
+	if paneWidth > 20 {
+		t.Fatalf("paneWidth = %d, want compressed pane column", paneWidth)
+	}
+	if typeWidth > 8 {
+		t.Fatalf("typeWidth = %d, want compressed type column", typeWidth)
+	}
+	if cwdWidth < 12 {
+		t.Fatalf("cwdWidth = %d, want cwd to keep remaining width with min 12", cwdWidth)
 	}
 }
 
@@ -183,12 +223,43 @@ func TestRenderPaneRow_CodexQuotaUsesUsageColumn(t *testing.T) {
 		t.Fatalf("row = %q, want no empty reset parens", row)
 	}
 	statusIdx := strings.Index(row, "working")
-	usageIdx := strings.Index(row, "5h 0%")
+	usageIdx := strings.Index(row, "5h 100% left")
 	cwdIdx := strings.Index(row, "/home/farr")
 	if statusIdx == -1 || usageIdx == -1 || cwdIdx == -1 {
 		t.Fatalf("row = %q, want status, usage, and cwd text", row)
 	}
 	if !(statusIdx < usageIdx && usageIdx < cwdIdx) {
 		t.Fatalf("row = %q, want usage between status and cwd", row)
+	}
+}
+
+func TestRenderPaneRow_WideScreenShowsSecondaryQuota(t *testing.T) {
+	m := Model{
+		width: 200,
+		panes: []CandidatePane{
+			{PaneID: 15, Kind: OccupantAgent, AgentType: model.AgentCodex},
+		},
+		codexQuota: &codex.QuotaInfo{
+			PrimaryPct:     0,
+			PrimaryReset:   "21:47",
+			SecondaryPct:   76,
+			SecondaryReset: "15:48 on 8 Apr",
+		},
+	}
+	pane := CandidatePane{
+		PaneID:    15,
+		Title:     "codex",
+		CWD:       "/home/farrell/project/atria",
+		Kind:      OccupantAgent,
+		AgentType: model.AgentCodex,
+		Status:    model.StatusIdle,
+	}
+
+	row := stripANSI(m.renderPaneRow(pane, "slot1", false))
+	if !strings.Contains(row, "5h 100% left (resets 21:47)") {
+		t.Fatalf("row = %q, want primary quota text", row)
+	}
+	if !strings.Contains(row, "7d 24% left (resets 15:48 on 8 Apr)") {
+		t.Fatalf("row = %q, want secondary quota text on wide screens", row)
 	}
 }

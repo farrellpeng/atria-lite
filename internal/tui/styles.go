@@ -129,3 +129,18 @@ func QuotaPercentageStyle(pct float64) lipgloss.Style {
 			Foreground(lipgloss.AdaptiveColor{Light: "#2d7d46", Dark: "#9ece6a"})
 	}
 }
+
+// QuotaRemainingStyle returns green/yellow/red based on percentage left.
+func QuotaRemainingStyle(pct float64) lipgloss.Style {
+	switch {
+	case pct <= 20:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#cc0000", Dark: "#ff4444"})
+	case pct <= 50:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#b8860b", Dark: "#e0af68"})
+	default:
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#2d7d46", Dark: "#9ece6a"})
+	}
+}
