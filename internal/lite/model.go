@@ -219,7 +219,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.statusText = m.modeStatusText()
 	case "r":
-		return m, refreshWindowPanes(m.client, m.ctx)
+		return m, m.refreshAllCmd()
 	}
 
 	return m, nil
@@ -261,7 +261,7 @@ func (m Model) handleNormalPanePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.clampCursor()
 		m.statusText = m.modeStatusText()
 	case "r":
-		return m, refreshWindowPanes(m.client, m.ctx)
+		return m, m.refreshAllCmd()
 	}
 	return m, nil
 }
@@ -274,7 +274,7 @@ func (m Model) handleReplacePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusText = m.modeStatusText()
 		return m, nil
 	case "r":
-		return m, refreshWindowPanes(m.client, m.ctx)
+		return m, m.refreshAllCmd()
 	case "1", "2", "3":
 		target := SlotID("slot" + msg.String())
 		if !isAllowedReplaceSlot(allowedReplaceSlots(m.bindings, m.replacePane), target) {
@@ -284,6 +284,13 @@ func (m Model) handleReplacePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, replaceSlot(m.client, m.ctx, m.bindings, m.replacePane, target)
 	}
 	return m, nil
+}
+
+func (m Model) refreshAllCmd() tea.Cmd {
+	return tea.Batch(
+		refreshWindowPanes(m.client, m.ctx),
+		fetchCodexQuota(m.codexClient),
+	)
 }
 
 func classifyWindowPanes(panes []wezterm.PaneInfo, ctx MonitorContext) []CandidatePane {

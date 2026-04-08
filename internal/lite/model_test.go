@@ -1288,6 +1288,29 @@ func TestMonitorRefreshSuccessOverridesFailureStatus(t *testing.T) {
 	}
 }
 
+func TestRefreshKeyAlsoFetchesCodexQuota(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 11, WindowID: 7, TabID: 70, Title: "codex"},
+		},
+		readScreens: map[int]string{
+			11: "OpenAI Codex\n›",
+		},
+	}
+	m := NewModel(client, ctx)
+
+	updated, cmd := m.Update(keyMsg("r"))
+	m = updated.(Model)
+
+	msgs := runCmds(t, cmd)
+	assertMsgTypes(t, msgs, candidatePanesLoadedMsg{}, codexQuotaMsg{})
+}
+
 func TestMonitorReclassifiesBindingsFromLivePanes(t *testing.T) {
 	ctx := MonitorContext{
 		SelfPaneID:    200,
