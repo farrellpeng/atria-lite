@@ -43,6 +43,26 @@ func TestParseRateLimitsResponse_MissingSecondary(t *testing.T) {
 	}
 }
 
+func TestParseRateLimitsResponse_PreservesResetMetadata(t *testing.T) {
+	raw := `{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":42.5,"resetsAt":"2026-04-05T12:00:00Z","windowDurationMins":300},"secondary":{"usedPercent":18.0,"resetsAt":"2026-04-10T00:00:00Z","windowDurationMins":10080}}},"jsonrpc":"2.0"}`
+	qi, err := parseRateLimitsResponse([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if qi.PrimaryResetAt.IsZero() {
+		t.Fatal("PrimaryResetAt is zero, want parsed timestamp")
+	}
+	if got, want := qi.PrimaryWindow, 5*time.Hour; got != want {
+		t.Fatalf("PrimaryWindow = %v, want %v", got, want)
+	}
+	if qi.SecondaryResetAt.IsZero() {
+		t.Fatal("SecondaryResetAt is zero, want parsed timestamp")
+	}
+	if got, want := qi.SecondaryWindow, 7*24*time.Hour; got != want {
+		t.Fatalf("SecondaryWindow = %v, want %v", got, want)
+	}
+}
+
 func TestParseRateLimitsResponse_UnixResetsAt(t *testing.T) {
 	now := time.Now()
 	primaryReset := now.Add(2*time.Hour + 10*time.Minute).Unix()

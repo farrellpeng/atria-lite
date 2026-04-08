@@ -3,6 +3,7 @@ package lite
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -262,13 +263,13 @@ func classifyCandidatePane(client windowPaneClient, pane wezterm.PaneInfo) Candi
 	if client != nil {
 		screen, err := client.ReadScreen(strconv.Itoa(pane.PaneID), liteScreenReadLines)
 		if err == nil {
-			content = screen
+			content = normalizePaneScreen(screen)
 		}
 	}
 
 	agentType := terminal.DetectAgent(pane.Title)
 	if agentType == "" && content != "" {
-		agentType = terminal.InferAgentFromScreen(content)
+		agentType = inferAgentFromLiveScreen(content)
 	}
 	if agentType != "" {
 		candidate.Kind = OccupantAgent
@@ -286,8 +287,32 @@ func classifyCandidatePane(client windowPaneClient, pane wezterm.PaneInfo) Candi
 			}
 		}
 	}
+	if content != "" {
+		candidate.ScreenChecked = true
+		candidate.LastScreen = content
+	}
 
 	return candidate
+}
+
+func inferAgentFromLiveScreen(content string) model.AgentType {
+	detectableAgents := []model.AgentType{
+		model.AgentClaude,
+		model.AgentCodex,
+		model.AgentOpenCode,
+		model.AgentCopilot,
+	}
+
+	var matches []model.AgentType
+	for _, agentType := range detectableAgents {
+		if terminal.HasAgentScreen(content, agentType) {
+			matches = append(matches, agentType)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return ""
 }
 
 func refreshCandidatePane(client windowPaneClient, pane CandidatePane) CandidatePane {
@@ -299,17 +324,80 @@ func refreshCandidatePane(client windowPaneClient, pane CandidatePane) Candidate
 	if err != nil || content == "" {
 		return pane
 	}
+	content = normalizePaneScreen(content)
+	screenChanged := content != pane.LastScreen
+	pane.ScreenChecked = true
+	pane.LastScreen = content
 
 	status, matchLine := terminal.ClassifyScreen(content, pane.AgentType)
 	if status == "" {
-		return pane
+		if screenChanged {
+			pane.UnmatchedReads = 0
+		} else {
+			pane.UnmatchedReads++
+		}
+		switch {
+		case screenChanged && pane.Status == model.StatusNeedsInput:
+			status = model.StatusWorking
+		case pane.Status == model.StatusWorking && !screenChanged && pane.UnmatchedReads >= 3:
+			status = model.StatusIdle
+		case !screenChanged && pane.Status == model.StatusWorking && isAllBlank(content) && pane.UnmatchedReads >= 2:
+			status = model.StatusIdle
+		default:
+			if pane.Status == model.StatusIdle && !terminal.HasAgentScreen(content, pane.AgentType) {
+				pane.OrphanTicks = nextOrphanTick(pane.OrphanTicks, screenChanged)
+				if pane.OrphanTicks >= 2 {
+					return demotePaneToNormal(pane)
+				}
+			} else {
+				pane.OrphanTicks = 0
+			}
+			return pane
+		}
+	} else {
+		pane.UnmatchedReads = 0
 	}
+
 	pane.Status = status
 	pane.Attention = ""
 	if status == model.StatusNeedsInput || status == model.StatusError {
 		pane.Attention = matchLine
 	}
+	if status == model.StatusIdle && !terminal.HasAgentScreen(content, pane.AgentType) {
+		pane.OrphanTicks = nextOrphanTick(pane.OrphanTicks, screenChanged)
+		if pane.OrphanTicks >= 2 {
+			return demotePaneToNormal(pane)
+		}
+	} else {
+		pane.OrphanTicks = 0
+	}
 	return pane
+}
+
+func normalizePaneScreen(content string) string {
+	return strings.ReplaceAll(content, "\x00", " ")
+}
+
+func demotePaneToNormal(pane CandidatePane) CandidatePane {
+	pane.Kind = OccupantNormal
+	pane.AgentType = ""
+	pane.Status = ""
+	pane.Activity = ""
+	pane.Attention = ""
+	pane.UnmatchedReads = 0
+	pane.OrphanTicks = 0
+	return pane
+}
+
+func nextOrphanTick(current int, screenChanged bool) int {
+	if screenChanged {
+		return 1
+	}
+	return current + 1
+}
+
+func isAllBlank(content string) bool {
+	return strings.TrimSpace(content) == ""
 }
 
 func discoverPaneCWD(client windowPaneClient, pane wezterm.PaneInfo) string {
@@ -349,7 +437,9 @@ type liteBackend struct {
 
 func (b liteBackend) Available() error { return nil }
 
-func (b liteBackend) ListSessions() ([]terminal.Session, error) { return nil, fmt.Errorf("unsupported") }
+func (b liteBackend) ListSessions() ([]terminal.Session, error) {
+	return nil, fmt.Errorf("unsupported")
+}
 
 func (b liteBackend) NewSession() (string, error) { return "", fmt.Errorf("unsupported") }
 

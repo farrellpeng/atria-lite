@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sethdeckard/atria/internal/codex"
@@ -371,20 +372,24 @@ func paneTypeLabel(pane CandidatePane) string {
 }
 
 func formatUsageText(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style) {
+	return formatUsageTextAt(qi, maxChars, time.Now())
+}
+
+func formatUsageTextAt(qi *codex.QuotaInfo, maxChars int, now time.Time) (string, lipgloss.Style) {
 	if qi == nil || maxChars < 3 {
 		return "", lipgloss.NewStyle()
 	}
 
-	primaryRemaining := quotaRemainingPct(qi.PrimaryPct)
-	primary := formatUsageWindow("5h", primaryRemaining, qi.PrimaryReset)
-	primaryStyle := tui.QuotaRemainingStyle(primaryRemaining)
+	primaryState := qi.PrimaryState(now)
+	primary := formatUsageWindow("5h", primaryState.RemainingPct, primaryState.Reset)
+	primaryStyle := tui.QuotaRemainingStyle(primaryState.RemainingPct)
 
 	if lipgloss.Width(primary) > maxChars {
-		shorter := fmt.Sprintf("5h %.0f%% left", primaryRemaining)
+		shorter := fmt.Sprintf("5h %.0f%% left", primaryState.RemainingPct)
 		if lipgloss.Width(shorter) <= maxChars {
 			return shorter, primaryStyle
 		}
-		shortest := fmt.Sprintf("%.0f%% left", primaryRemaining)
+		shortest := fmt.Sprintf("%.0f%% left", primaryState.RemainingPct)
 		if lipgloss.Width(shortest) <= maxChars {
 			return shortest, primaryStyle
 		}
@@ -392,7 +397,8 @@ func formatUsageText(qi *codex.QuotaInfo, maxChars int) (string, lipgloss.Style)
 	}
 
 	if hasSecondaryQuota(qi) {
-		secondary := formatUsageWindow("7d", quotaRemainingPct(qi.SecondaryPct), qi.SecondaryReset)
+		secondaryState := qi.SecondaryState(now)
+		secondary := formatUsageWindow("7d", secondaryState.RemainingPct, secondaryState.Reset)
 		combined := primary + " / " + secondary
 		if lipgloss.Width(combined) <= maxChars {
 			return combined, primaryStyle
@@ -444,5 +450,5 @@ func hasSecondaryQuota(qi *codex.QuotaInfo) bool {
 	if qi == nil {
 		return false
 	}
-	return qi.SecondaryPct > 0 || qi.SecondaryReset != ""
+	return qi.HasSecondaryQuota()
 }

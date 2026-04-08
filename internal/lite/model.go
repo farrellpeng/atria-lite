@@ -54,7 +54,7 @@ type Model struct {
 
 	missingPaneGrace map[int]int
 
-	codexClient *codex.Client   // nil if codex binary not found
+	codexClient *codex.Client    // nil if codex binary not found
 	codexQuota  *codex.QuotaInfo // global account-level quota cache
 }
 
@@ -100,7 +100,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case candidatePanesLoadedMsg:
-		m.panes = msg.panes
+		m.panes = m.mergePaneState(msg.panes)
 		nextBindings, autoloadedPane, recoverWorkspace := m.reconcileBindings()
 		m.syncReplacePrompt()
 		m.clampCursor()
@@ -130,6 +130,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, refreshPaneStatuses(m.client, m.panes)
 	case paneStatusesLoadedMsg:
 		m.panes = msg.panes
+		m.syncBindingKindsFromPanes()
 		m.syncReplacePrompt()
 		m.clampCursor()
 		return m, tea.Batch(m.ensureStatusTick(), m.ensureSpinnerTick(), m.ensureQuotaTick())
@@ -346,6 +347,44 @@ func (m *Model) reconcileBindings() ([]SlotBinding, *CandidatePane, []int) {
 	return nextBindings, autoloadedPane, recoverWorkspace
 }
 
+func (m Model) mergePaneState(next []CandidatePane) []CandidatePane {
+	if len(m.panes) == 0 || len(next) == 0 {
+		return next
+	}
+
+	prevByID := make(map[int]CandidatePane, len(m.panes))
+	for _, pane := range m.panes {
+		prevByID[pane.PaneID] = pane
+	}
+
+	merged := make([]CandidatePane, len(next))
+	copy(merged, next)
+	for i := range merged {
+		prev, ok := prevByID[merged[i].PaneID]
+		if !ok {
+			continue
+		}
+		if merged[i].Kind != OccupantAgent || prev.Kind != OccupantAgent || merged[i].AgentType != prev.AgentType {
+			continue
+		}
+		if merged[i].Status == "" {
+			merged[i].Status = prev.Status
+		}
+		if merged[i].Activity == "" {
+			merged[i].Activity = prev.Activity
+		}
+		if !merged[i].ScreenChecked {
+			merged[i].ScreenChecked = prev.ScreenChecked
+		}
+		if merged[i].LastScreen == "" {
+			merged[i].LastScreen = prev.LastScreen
+		}
+		merged[i].UnmatchedReads = prev.UnmatchedReads
+		merged[i].OrphanTicks = prev.OrphanTicks
+	}
+	return merged
+}
+
 func (m *Model) bootstrapBindingsFromStarter(livePaneByID map[int]CandidatePane) []SlotBinding {
 	starterPane, ok := livePaneByID[m.ctx.StarterPaneID]
 	if !ok {
@@ -403,6 +442,24 @@ func (m *Model) applyBindings(bindings []SlotBinding) {
 	m.bindings = next
 	m.ctx.SlotBindings = m.bindings
 	m.ctx.WorkspacePaneIDs = bindingPaneIDs(m.bindings)
+}
+
+func (m *Model) syncBindingKindsFromPanes() {
+	if len(m.bindings) == 0 || len(m.panes) == 0 {
+		return
+	}
+	liveKinds := make(map[int]OccupantKind, len(m.panes))
+	for _, pane := range m.panes {
+		liveKinds[pane.PaneID] = pane.Kind
+	}
+
+	next := normalizeBindings(m.bindings)
+	for i := range next {
+		if kind, ok := liveKinds[next[i].PaneID]; ok {
+			next[i].Kind = kind
+		}
+	}
+	m.applyBindings(next)
 }
 
 func (m *Model) retainTransientMissingBindings(bindings []SlotBinding, livePaneIDs map[int]bool) []SlotBinding {

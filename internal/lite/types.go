@@ -34,6 +34,11 @@ type CandidatePane struct {
 	Status    model.AgentStatus
 	Activity  string
 	Attention string
+
+	ScreenChecked  bool
+	LastScreen     string
+	UnmatchedReads int
+	OrphanTicks    int
 }
 
 type SlotBinding struct {

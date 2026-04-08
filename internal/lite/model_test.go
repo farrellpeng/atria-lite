@@ -55,6 +55,40 @@ func TestRefreshUsesDetectAgentThenScreenFallback(t *testing.T) {
 	}
 }
 
+func TestRefreshIgnoresStaleAgentBrandingInShellScrollback(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+	}
+	client := &stubWindowPaneClient{
+		panes: []wezterm.PaneInfo{
+			{PaneID: 12, WindowID: 7, TabID: 70, Title: "shell"},
+		},
+		readScreens: map[int]string{
+			12: "OpenAI Codex\nmodel: gpt-5.4\nold output\n\nuser@host $ ",
+		},
+		getVars: map[int]string{
+			12: "/projects/bravo",
+		},
+	}
+	m := NewModel(client, ctx)
+
+	msg := runCmd(t, m.Init())
+	updated, _ := m.Update(msg)
+	got := updated.(Model)
+
+	if len(got.panes) != 1 {
+		t.Fatalf("panes len = %d, want 1", len(got.panes))
+	}
+	if got.panes[0].Kind != OccupantNormal {
+		t.Fatalf("pane kind = %q, want normal when only stale branding remains in scrollback", got.panes[0].Kind)
+	}
+	if got.panes[0].AgentType != "" {
+		t.Fatalf("pane agent = %q, want empty for shell pane", got.panes[0].AgentType)
+	}
+}
+
 func TestRefreshBuildsDisplayRowsFromDiscoveredCWD(t *testing.T) {
 	ctx := MonitorContext{
 		SelfPaneID: 200,
@@ -340,6 +374,48 @@ func TestStatusTickRefreshesStatusesAndReschedulesStatusTick(t *testing.T) {
 	}
 	msgs := runCmds(t, next)
 	assertMsgTypes(t, msgs, statusTickMsg{}, spinnerTickMsg{}, codexQuotaMsg{})
+}
+
+func TestStatusTickDemotesExitedAgentPaneToNormalAfterStableShellReads(t *testing.T) {
+	ctx := MonitorContext{
+		SelfPaneID: 200,
+		WindowID:   7,
+		TabID:      70,
+	}
+	client := &stubWindowPaneClient{
+		readScreens: map[int]string{
+			11: "user@host $ ",
+		},
+	}
+	m := NewModel(client, ctx)
+	m.panes = []CandidatePane{{
+		PaneID:    11,
+		WindowID:  7,
+		TabID:     70,
+		Title:     "codex",
+		CWD:       "/home/farrell/project/atria/",
+		Kind:      OccupantAgent,
+		AgentType: model.AgentCodex,
+		Status:    model.StatusWorking,
+	}}
+
+	for i := 0; i < 5; i++ {
+		updated, cmd := m.Update(statusTickMsg{})
+		m = updated.(Model)
+		msg := runCmd(t, cmd)
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+	}
+
+	if len(m.panes) != 1 {
+		t.Fatalf("panes len = %d, want 1", len(m.panes))
+	}
+	if m.panes[0].Kind != OccupantNormal {
+		t.Fatalf("pane kind = %q, want normal after repeated shell reads", m.panes[0].Kind)
+	}
+	if m.panes[0].AgentType != "" {
+		t.Fatalf("pane agent = %q, want empty after agent exit", m.panes[0].AgentType)
+	}
 }
 
 func TestSpinnerTickAdvancesWhileWorking(t *testing.T) {

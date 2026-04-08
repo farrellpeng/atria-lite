@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sethdeckard/atria/internal/codex"
@@ -24,7 +25,7 @@ func TestFormatUsageText(t *testing.T) {
 		SecondaryReset: "15:48 on 8 Apr",
 	}
 
-	text, _ := formatUsageText(qi, 50)
+	text, _ := formatUsageText(qi, 80)
 	if text == "" {
 		t.Error("text is empty")
 	}
@@ -77,7 +78,7 @@ func TestFormatUsageText_ShowsSecondaryEvenWhenZero(t *testing.T) {
 		SecondaryPct:   0,
 		SecondaryReset: "15:48 on 8 Apr",
 	}
-	text, _ := formatUsageText(qi, 40)
+	text, _ := formatUsageText(qi, 80)
 	if !strings.Contains(text, "5h 100% left (resets 21:47) / 7d 100% left") {
 		t.Fatalf("text = %q, want both 5h and 7d remaining windows", text)
 	}
@@ -91,6 +92,29 @@ func TestFormatUsageText_MissingSecondaryDoesNotRenderFake100(t *testing.T) {
 	text, _ := formatUsageText(qi, 40)
 	if strings.Contains(text, "7d") {
 		t.Fatalf("text = %q, want no secondary window when API omitted it", text)
+	}
+}
+
+func TestFormatUsageText_RefreshesAcrossResetBoundary(t *testing.T) {
+	loc := time.FixedZone("UTC+8", 8*60*60)
+	fetchedAt := time.Date(2026, time.April, 8, 12, 0, 0, 0, loc)
+	now := time.Date(2026, time.April, 8, 16, 0, 0, 0, loc)
+	qi := &codex.QuotaInfo{
+		PrimaryPct:       12,
+		PrimaryResetAt:   time.Date(2026, time.April, 8, 13, 0, 0, 0, loc),
+		PrimaryWindow:    5 * time.Hour,
+		SecondaryPct:     84,
+		SecondaryResetAt: time.Date(2026, time.April, 8, 15, 48, 0, 0, loc),
+		SecondaryWindow:  7 * 24 * time.Hour,
+		FetchedAt:        fetchedAt,
+	}
+
+	text, _ := formatUsageTextAt(qi, 72, now)
+	if !strings.Contains(text, "5h 100% left (resets 18:00)") {
+		t.Fatalf("text = %q, want primary usage to roll into the next 5h window", text)
+	}
+	if !strings.Contains(text, "7d 100% left (resets 15:48 on 15 Apr)") {
+		t.Fatalf("text = %q, want weekly usage to roll into the next 7d window", text)
 	}
 }
 

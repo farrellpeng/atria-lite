@@ -16,11 +16,20 @@ import (
 )
 
 type QuotaInfo struct {
-	PrimaryPct     float64
-	PrimaryReset   string
-	SecondaryPct   float64
-	SecondaryReset string
-	FetchedAt      time.Time
+	PrimaryPct       float64
+	PrimaryReset     string
+	PrimaryResetAt   time.Time
+	PrimaryWindow    time.Duration
+	SecondaryPct     float64
+	SecondaryReset   string
+	SecondaryResetAt time.Time
+	SecondaryWindow  time.Duration
+	FetchedAt        time.Time
+}
+
+type QuotaWindowState struct {
+	RemainingPct float64
+	Reset        string
 }
 
 type Client struct {
@@ -251,16 +260,75 @@ func parseRateLimitsResponse(data []byte) (*QuotaInfo, error) {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	qi := &QuotaInfo{
-		PrimaryPct:   resp.Result.RateLimits.Primary.UsedPercent,
-		PrimaryReset: resp.Result.RateLimits.Primary.ResetsAt.untilReset(),
-		FetchedAt:    time.Now(),
+		PrimaryPct:     resp.Result.RateLimits.Primary.UsedPercent,
+		PrimaryReset:   formatResetTimeAt(resp.Result.RateLimits.Primary.ResetsAt.time, now),
+		PrimaryResetAt: resp.Result.RateLimits.Primary.ResetsAt.time,
+		PrimaryWindow:  time.Duration(resp.Result.RateLimits.Primary.WindowDurationMins) * time.Minute,
+		FetchedAt:      now,
 	}
 	if sec := resp.Result.RateLimits.Secondary; sec.UsedPercent > 0 {
 		qi.SecondaryPct = sec.UsedPercent
-		qi.SecondaryReset = sec.ResetsAt.untilReset()
+		qi.SecondaryReset = formatResetTimeAt(sec.ResetsAt.time, now)
+		qi.SecondaryResetAt = sec.ResetsAt.time
+		qi.SecondaryWindow = time.Duration(sec.WindowDurationMins) * time.Minute
 	}
 	return qi, nil
+}
+
+func (q *QuotaInfo) PrimaryState(now time.Time) QuotaWindowState {
+	if q == nil {
+		return QuotaWindowState{}
+	}
+	return quotaWindowState(q.PrimaryPct, q.PrimaryResetAt, q.PrimaryWindow, q.FetchedAt, q.PrimaryReset, now)
+}
+
+func (q *QuotaInfo) SecondaryState(now time.Time) QuotaWindowState {
+	if q == nil {
+		return QuotaWindowState{}
+	}
+	return quotaWindowState(q.SecondaryPct, q.SecondaryResetAt, q.SecondaryWindow, q.FetchedAt, q.SecondaryReset, now)
+}
+
+func (q *QuotaInfo) HasSecondaryQuota() bool {
+	if q == nil {
+		return false
+	}
+	return q.SecondaryPct > 0 || q.SecondaryReset != "" || !q.SecondaryResetAt.IsZero()
+}
+
+func quotaWindowState(usedPct float64, resetAt time.Time, window time.Duration, fetchedAt time.Time, fallbackReset string, now time.Time) QuotaWindowState {
+	if resetAt.IsZero() {
+		return QuotaWindowState{
+			RemainingPct: quotaRemainingPct(usedPct),
+			Reset:        fallbackReset,
+		}
+	}
+
+	effectiveUsed := usedPct
+	effectiveResetAt := resetAt
+	if window > 0 && !fetchedAt.IsZero() && fetchedAt.Before(resetAt) && !now.Before(resetAt) {
+		cycles := int(now.Sub(resetAt)/window) + 1
+		effectiveResetAt = resetAt.Add(time.Duration(cycles) * window)
+		effectiveUsed = 0
+	}
+
+	return QuotaWindowState{
+		RemainingPct: quotaRemainingPct(effectiveUsed),
+		Reset:        formatResetTimeAt(effectiveResetAt, now),
+	}
+}
+
+func quotaRemainingPct(usedPct float64) float64 {
+	remaining := 100 - usedPct
+	if remaining < 0 {
+		return 0
+	}
+	if remaining > 100 {
+		return 100
+	}
+	return float64(int(remaining + 0.5))
 }
 
 func formatResetTimeAt(reset, now time.Time) string {
