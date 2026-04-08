@@ -337,8 +337,6 @@ func TestStartMovesOverflowPanesToNewTabInSameWindow(t *testing.T) {
 
 	wantMoves := []movePaneCall{
 		{PaneID: 101, WindowID: 700},
-		{PaneID: 204, WindowID: 700},
-		{PaneID: 205, WindowID: 700},
 	}
 	if !reflect.DeepEqual(runtime.moveCalls, wantMoves) {
 		t.Fatalf("MovePaneToNewTab() calls = %#v, want %#v", runtime.moveCalls, wantMoves)
@@ -361,7 +359,7 @@ func TestStartMovesOverflowPanesToNewTabInSameWindow(t *testing.T) {
 	}
 }
 
-func TestStartKeepsStarterPaneWhenItIsPartOfWorkspace(t *testing.T) {
+func TestStartIgnoresAgentPanesFromOtherTabs(t *testing.T) {
 	t.Setenv("WEZTERM_PANE", "101")
 
 	runtime := &mockStartRuntime{
@@ -379,10 +377,11 @@ func TestStartKeepsStarterPaneWhenItIsPartOfWorkspace(t *testing.T) {
 			},
 			{
 				{PaneID: 101, WindowID: 700, TabID: 701, Title: "shell"},
+				{PaneID: 999, WindowID: 700, TabID: 701, Title: "atria-lite", Rows: 7},
 				{PaneID: 201, WindowID: 700, TabID: 702, Title: "claude code"},
 			},
 		},
-		splitPaneID: 999,
+		splitPaneIDs: []int{202, 999},
 	}
 	installMockStartRuntime(t, runtime)
 
@@ -391,30 +390,29 @@ func TestStartKeepsStarterPaneWhenItIsPartOfWorkspace(t *testing.T) {
 	}
 
 	if len(runtime.moveCalls) != 0 {
-		t.Fatalf("MovePaneToNewTab() calls = %#v, want none when starter stays in workspace", runtime.moveCalls)
+		t.Fatalf("MovePaneToNewTab() calls = %#v, want none when other-tab agent is ignored", runtime.moveCalls)
 	}
 	if len(runtime.splitCalls) != 2 {
 		t.Fatalf("SplitPane() call count = %d, want 2", len(runtime.splitCalls))
 	}
 	wantWorkspaceSplit := wezterm.SplitPaneOptions{
-		PaneID:     201,
-		Direction:  "right",
-		Percent:    50,
-		MovePaneID: 101,
+		PaneID:    101,
+		Direction: "right",
+		Percent:   50,
 	}
 	if !reflect.DeepEqual(runtime.splitCalls[0], wantWorkspaceSplit) {
 		t.Fatalf("workspace SplitPane() call = %#v, want %#v", runtime.splitCalls[0], wantWorkspaceSplit)
 	}
-	if runtime.splitCalls[1].PaneID != 201 || runtime.splitCalls[1].Direction != "top" || !runtime.splitCalls[1].TopLevel {
-		t.Fatalf("monitor SplitPane() call = %#v, want top-level split from pane 201", runtime.splitCalls[1])
+	if runtime.splitCalls[1].PaneID != 101 || runtime.splitCalls[1].Direction != "top" || !runtime.splitCalls[1].TopLevel {
+		t.Fatalf("monitor SplitPane() call = %#v, want top-level split from pane 101", runtime.splitCalls[1])
 	}
 	ctx, err := decodeMonitorCommandContext(runtime.splitCalls[1].Command)
 	if err != nil {
 		t.Fatalf("DecodeMonitorContext() error = %v", err)
 	}
 	wantBindings := []SlotBinding{
-		{Slot: Slot1, PaneID: 201, Kind: OccupantAgent},
-		{Slot: Slot2, PaneID: 101, Kind: OccupantNormal},
+		{Slot: Slot1, PaneID: 101, Kind: OccupantNormal},
+		{Slot: Slot2, PaneID: 202, Kind: OccupantNormal},
 	}
 	if !reflect.DeepEqual(ctx.SlotBindings, wantBindings) {
 		t.Fatalf("SlotBindings = %#v, want %#v", ctx.SlotBindings, wantBindings)

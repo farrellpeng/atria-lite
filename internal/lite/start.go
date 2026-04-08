@@ -68,6 +68,7 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 	if err != nil {
 		return fmt.Errorf("list window panes for window %d: %w", starterPane.WindowID, err)
 	}
+	windowPanes = panesInTab(windowPanes, starterPane.TabID)
 	if err := requireWindowPanes(windowPanes, starterPane.WindowID, starterPaneID); err != nil {
 		return err
 	}
@@ -80,6 +81,7 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 		if err != nil {
 			return fmt.Errorf("recheck window panes for window %d: %w", starterPane.WindowID, err)
 		}
+		windowPanes = panesInTab(windowPanes, starterPane.TabID)
 		requiredPaneIDs := append([]int(nil), requiredBindingPaneIDs...)
 		requiredPaneIDs = append(requiredPaneIDs, overflow[i:]...)
 		if err := requireWindowPanes(windowPanes, starterPane.WindowID, requiredPaneIDs...); err != nil {
@@ -94,6 +96,7 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 	if err != nil {
 		return fmt.Errorf("recheck window panes before monitor split for window %d: %w", starterPane.WindowID, err)
 	}
+	windowPanes = panesInTab(windowPanes, starterPane.TabID)
 	requiredPaneIDs := bindingPaneIDs(bindings)
 	if len(requiredPaneIDs) == 0 {
 		requiredPaneIDs = []int{starterPaneID}
@@ -134,6 +137,7 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 				if err != nil {
 					return fmt.Errorf("recheck window panes before monitor split for window %d: %w", starterPane.WindowID, err)
 				}
+				windowPanes = panesInTab(windowPanes, starterPane.TabID)
 			}
 			if err := requireWindowPanes(windowPanes, starterPane.WindowID, monitorAnchorPaneID); err != nil {
 				return err
@@ -172,6 +176,20 @@ func startWithRuntime(runtime wezTermRuntime, starterPaneID int, opts StartOptio
 	}
 
 	return nil
+}
+
+func panesInTab(panes []wezterm.PaneInfo, tabID int) []wezterm.PaneInfo {
+	if tabID == 0 {
+		return append([]wezterm.PaneInfo(nil), panes...)
+	}
+
+	filtered := make([]wezterm.PaneInfo, 0, len(panes))
+	for _, pane := range panes {
+		if pane.TabID == tabID {
+			filtered = append(filtered, pane)
+		}
+	}
+	return filtered
 }
 
 func activateMonitorPane(runtime wezTermRuntime, sessionID string) error {

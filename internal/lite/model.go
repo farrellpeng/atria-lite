@@ -406,6 +406,9 @@ func (m *Model) autoLoadDiscoveredAgents(bindings []SlotBinding) ([]SlotBinding,
 		if pane.Kind != OccupantAgent {
 			continue
 		}
+		if m.ctx.TabID != 0 && pane.TabID != 0 && pane.TabID != m.ctx.TabID {
+			continue
+		}
 		next, prompt := PlanAgentLoad(current, pane)
 		if prompt {
 			break
